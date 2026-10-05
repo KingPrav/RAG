@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "docs-assistant"
+version = "0.1.0"
+description = "Instrumented, evaluated RAG assistant over the FastAPI documentation"
+requires-python = ">=3.10"
+dependencies = [
+    "python-dotenv>=1.0",
+    "tiktoken>=0.7",
+    "langchain-core>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    # Only for the regression test showing why the built-in
+    # MarkdownHeaderTextSplitter isn't used.
+    "langchain-text-splitters>=1.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
