@@ -5,6 +5,24 @@ an accurate answer with citations to the exact docs section. Built as a
 production-style RAG system with retrieval instrumentation and an automated
 eval harness, so every quality claim is backed by a number.
 
+## Architecture
+
+Built on **LangChain** interfaces, with custom components where the built-ins
+don't fit this corpus:
+
+| Stage | Component | LangChain interface |
+|---|---|---|
+| Load | `FastAPIDocsLoader` (custom: resolves code includes, keeps section anchors) | `BaseLoader` → `Document` |
+| Chunk | `SectionChunker` (custom: code-safe, token-bounded) | `BaseDocumentTransformer` |
+| Embed + store | `text-embedding-3-small` → Chroma (cosine), incremental via `index()` + `SQLRecordManager` | `OpenAIEmbeddings`, `Chroma`, indexing API |
+| Retrieve | `retrieve()` → top-k chunks with cosine similarity | `VectorStore` |
+| Generate | *(next step)* | LCEL chain |
+
+Why custom loader and chunker: no built-in loader resolves FastAPI's `{* ... *}` code
+includes, and `MarkdownHeaderTextSplitter` strips indentation inside code blocks
+(`    return item` → `return item`), corrupting the Python examples. A regression test
+(`test_langchain_markdown_splitter_breaks_code`) documents this.
+
 ## Setup
 
 ```bash
@@ -82,10 +100,30 @@ from the measured section sizes:
 - **Stable IDs** (`tutorial/body#create-your-data-model`, `.../2` for split parts) so logs and
   evals can refer to chunks across runs.
 
+## Step 2b: embeddings + vector store
+
+```bash
+python -m docs_assistant.index                                   # embed + store (incremental)
+python -m docs_assistant.search "how do I declare a request body?"   # inspect retrieval
+```
+
+- **Model:** `text-embedding-3-small` (1,536 dims, unit-length vectors). Embedding the full
+  corpus (~250K tokens) costs about half a cent.
+- **Store:** Chroma, persisted locally in `data/index/`, configured for **cosine** distance
+  (Chroma's default is squared L2) so every result carries an interpretable similarity score.
+- **Incremental indexing** with LangChain's indexing API: a record manager keeps a SHA-256
+  hash of every chunk. Re-running with no changes embeds nothing; edited chunks are
+  re-embedded and their old versions deleted; chunks from removed pages are deleted
+  (`cleanup="full"`, grouped by `doc_id`).
+- **One collection per configuration** (`fastapi-docs-te3small-c512`), so Step 8 experiments
+  don't overwrite each other.
+- `data/index/index_manifest.json` records the model, docs commit, chunk settings, counts,
+  time and approximate cost of every indexing run.
+
 ## Roadmap
 
 1. Corpus ingestion ✅
-2. Chunking ✅, then embeddings + vector store
+2. Chunking ✅, embeddings + vector store ✅
 3. Baseline RAG pipeline
 4. Retrieval instrumentation: queries, chunks, similarity scores, whether the answer used them
 5. Failure analysis

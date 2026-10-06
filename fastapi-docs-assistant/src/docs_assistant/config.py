@@ -13,7 +13,9 @@ ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = ROOT / "data"
 REPO_DIR = DATA_DIR / "raw" / "fastapi"          # sparse clone of the FastAPI repo
 PROCESSED_DIR = DATA_DIR / "processed"
+INDEX_DIR = DATA_DIR / "index"                   # vector store + record manager
 
+# ---- Step 1: corpus
 # The corpus is pinned to one commit, so eval numbers stay comparable.
 # Bump it deliberately, re-run ingestion and evals, and note it in the results.
 FASTAPI_REPO_URL = "https://github.com/fastapi/fastapi.git"
@@ -37,14 +39,30 @@ EXCLUDED_PAGES = {
     "translation-banner.md": "UI fragment",
     "_llm-test.md": "internal test page for translation tooling",
 }
-# ---- Step 2: chunking (values chosen from the section-size distribution;
+EXCLUDED_DIRS = {
+    "reference": "API reference is generated from source docstrings at build time; "
+                 "the Markdown holds only '::: fastapi.X' directives",
+}
+
+# ---- Step 2a: chunking (values chosen from the section-size distribution;
 # see README). These are the first knobs to tune in Step 8.
 CHUNK_SPLIT_LEVEL = 3      # start a new chunk at every H1/H2/H3 heading
 CHUNK_MAX_TOKENS = 512     # ~90% of H3-level sections fit without splitting
 CHUNK_MIN_TOKENS = 50      # smaller sections are merged into a neighbour
 TOKENIZER_ENCODING = "cl100k_base"   # the tokenizer used by text-embedding-3-*
 
-EXCLUDED_DIRS = {
-    "reference": "API reference is generated from source docstrings at build time; "
-                 "the Markdown holds only '::: fastapi.X' directives",
-}
+# ---- Step 2b: embeddings + vector store
+EMBEDDING_MODEL = "text-embedding-3-small"    # 1,536 dims, unit-length vectors
+# Approximate list price, used only for the cost estimate in the index manifest.
+# Check OpenAI's pricing page; update if it changes.
+EMBEDDING_USD_PER_1M_TOKENS = 0.02
+
+# One collection per (model, chunk size), so Step 8 experiments can sit side by
+# side without overwriting each other.
+COLLECTION_NAME = f"fastapi-docs-te3small-c{CHUNK_MAX_TOKENS}"
+CHROMA_DIR = INDEX_DIR / "chroma"
+RECORD_MANAGER_DB = INDEX_DIR / "record_manager.sqlite"
+INDEX_BATCH_SIZE = 100
+
+# ---- Retrieval
+TOP_K = 5
