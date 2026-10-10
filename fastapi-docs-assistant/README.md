@@ -16,7 +16,7 @@ don't fit this corpus:
 | Chunk | `SectionChunker` (custom: code-safe, token-bounded) | `BaseDocumentTransformer` |
 | Embed + store | `text-embedding-3-small` → Chroma (cosine), incremental via `index()` + `SQLRecordManager` | `OpenAIEmbeddings`, `Chroma`, indexing API |
 | Retrieve | `retrieve()` → top-k chunks with cosine similarity | `VectorStore` |
-| Generate | *(next step)* | LCEL chain |
+| Generate | Baseline two-step chain: retrieve → numbered sources → structured answer → citation check | `ChatPromptTemplate` \| `ChatOpenAI.with_structured_output` |
 
 Why custom loader and chunker: no built-in loader resolves FastAPI's `{* ... *}` code
 includes, and `MarkdownHeaderTextSplitter` strips indentation inside code blocks
@@ -120,12 +120,72 @@ python -m docs_assistant.search "how do I declare a request body?"   # inspect r
 - `data/index/index_manifest.json` records the model, docs commit, chunk settings, counts,
   time and approximate cost of every indexing run.
 
+## Step 3: baseline RAG chain
+
+```bash
+python -m docs_assistant.ask "how do I declare a request body?"
+python -m docs_assistant.ask "..." --show-retrieved     # also list every retrieved chunk
+```
+
+- **Two-step chain, not an agent:** one retrieval, one LLM call. Predictable cost and latency,
+  and every later improvement can be attributed to a specific change.
+- **Grounded prompt:** answer only from the numbered sources, cite every claim as `[n]`,
+  copy code exactly, and say so when the sources don't contain the answer.
+- **Structured output** (`answer`, `cited_sources`, `answerable`) instead of free text, so
+  citations are machine-checkable. Cited numbers that were never retrieved are removed and
+  counted as `invalid_citations`.
+- **No similarity cutoff yet:** good matches score ~0.5-0.6 with `text-embedding-3-small`, so a
+  threshold will be set from logged data in Step 4, not guessed.
+- Every answer returns a `RAGResult`: retrieved chunks and similarities, citations, retrieval
+  and generation latency, tokens and cost. Step 4 logs these.
+- **Model:** configurable via `CHAT_MODEL` in `.env`; prices for the cost estimate live in
+  `config.py`.
+
+## Step 4: retrieval instrumentation
+
+```bash
+python -m docs_assistant.ask "..."                                   # every question is traced
+python -m docs_assistant.run_queries queries/probe_questions.txt     # trace 40 probe questions
+python -m docs_assistant.report                                      # summarize the traces
+```
+
+Every question writes one JSON line to `data/logs/traces.jsonl`:
+
+| Section | Fields |
+|---|---|
+| `retrieval` | k, latency, and per result: rank, chunk ID, doc ID, cosine similarity, tokens |
+| `generation` | model, **prompt version** (hash of the system prompt), latency, input/output/context tokens, cost, answer, citations, invalid citations, answerable |
+| `usage` | did the answer actually use the chunks? (below) |
+| `corpus` | docs commit, collection, embedding model, chunk size |
+
+- **Retrieval and generation are logged separately**, each with its own latency, so a bad or
+  slow answer can be attributed to search or to the model.
+- **IDs and scores, not chunk text**: enough to replay a query against the index, and small.
+- **Own schema, versioned.** OpenTelemetry's GenAI semantic conventions are still in
+  *Development* status, so traces use an internal schema (`schema_version`) that can be mapped
+  to OTel at export time. LangSmith tracing can be enabled separately via environment variables.
+
+**Did the answer use the retrieved chunks?** Three deterministic signals per answer (`usage.py`):
+
+| Signal | Question it answers |
+|---|---|
+| Context utilization | What share of retrieved chunks were cited? |
+| Citation support | For each sentence citing `[n]`, how much of its vocabulary appears in chunk `n`? (< 0.5 = unsupported) |
+| Code grounding | What share of each answer code block's lines appear verbatim in the retrieved chunks? (< 0.8 = ungrounded, i.e. possibly invented API) |
+
+These are lexical triage signals: they miss paraphrase and can reward copying, so they flag
+answers to inspect rather than grade them. Step 7 adds an LLM judge for faithfulness.
+
+`report` summarizes: latency p50/p95 per stage, cost and tokens per query, top-1 similarity
+distribution, answerable rate, context utilization, invalid/unsupported citation rates,
+ungrounded code, the most-retrieved chunks and the weakest-retrieval queries.
+
 ## Roadmap
 
 1. Corpus ingestion ✅
 2. Chunking ✅, embeddings + vector store ✅
-3. Baseline RAG pipeline
-4. Retrieval instrumentation: queries, chunks, similarity scores, whether the answer used them
+3. Baseline RAG pipeline ✅
+4. Retrieval instrumentation: queries, chunks, similarity scores, whether the answer used them ✅
 5. Failure analysis
 6. Ground-truth set: 50–100 Q&A pairs targeting the weak spots
 7. Eval harness: exact match for factual answers, LLM-as-judge for open-ended ones

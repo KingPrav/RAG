@@ -3,6 +3,7 @@
 Every tunable lives here so later experiments (chunk size, top-k, models) are
 compared by changing one file and re-running the evals.
 """
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -66,3 +67,14 @@ INDEX_BATCH_SIZE = 100
 
 # ---- Retrieval
 TOP_K = 5
+
+# ---- Step 3: generation
+# OpenAI's pages disagree on the exact identifier of the cheapest current tier
+# ("Luna"), so the model is configurable. Override with CHAT_MODEL in .env.
+# List the models your key can use:
+#   python -c "from openai import OpenAI; print(sorted(m.id for m in OpenAI().models.list()))"
+CHAT_MODEL = os.getenv("CHAT_MODEL", "gpt-6-luna")
+# Approximate list prices for the cost estimate (USD per 1M tokens). Check
+# OpenAI's pricing page and update these if you change model.
+CHAT_USD_PER_1M_INPUT = float(os.getenv("CHAT_USD_PER_1M_INPUT", "0.20"))
+CHAT_USD_PER_1M_OUTPUT = float(os.getenv("CHAT_USD_PER_1M_OUTPUT", "1.20"))

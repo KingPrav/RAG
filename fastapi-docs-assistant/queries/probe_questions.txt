@@ -1,0 +1,57 @@
+# Probe questions for Step 4/5: a deliberately mixed set to surface weak spots.
+# One question per line. Lines starting with # are ignored.
+# Run: python -m docs_assistant.run_queries queries/probe_questions.txt
+
+# --- How-to (conceptual, should be easy) ---
+How do I declare a request body?
+How do I add query parameters with default values?
+How do I make a query parameter required?
+How do I return a custom HTTP status code from a path operation?
+How do I upload a file?
+How do I handle form data?
+How do I run a background task after returning a response?
+How do I add CORS to my app?
+How do I serve static files?
+How do I split a large app into multiple files?
+
+# --- Exact facts (good for exact-match scoring later) ---
+What status code does FastAPI return when request validation fails?
+What is the default status code for a successful POST path operation?
+Which package do I need to install to receive form data?
+What is the default port of the FastAPI development server?
+At what URL are the interactive Swagger UI docs served by default?
+At what URL is the alternative ReDoc documentation served?
+
+# --- Exact terms and API names (where pure vector search tends to struggle) ---
+Depends with yield
+What does response_model_exclude_unset do?
+HTTPException headers parameter
+OAuth2PasswordBearer tokenUrl
+What is the difference between Query and Path?
+How do I use Annotated with Depends?
+jsonable_encoder
+
+# --- Code-heavy ---
+Show me an example of a dependency that opens and closes a database session.
+How do I test a FastAPI app with TestClient?
+How do I write an async test for my FastAPI app?
+How do I create a JWT access token for OAuth2 login?
+How do I accept a list of items in the request body?
+
+# --- Multi-section / comparison ---
+When should I use async def versus def for path operations?
+What is the difference between a middleware and a dependency?
+How do I deploy FastAPI with Docker and multiple workers?
+How do I update only some fields of an item with PATCH?
+
+# --- Vocabulary mismatch (user words differ from the docs) ---
+How do I stop users from calling my API without logging in?
+My endpoint is slow, can I send the email later instead of making the user wait?
+How do I make my API return XML instead of JSON?
+How do I check the API key in a header on every request?
+
+# --- Out of scope (should be marked not answerable) ---
+How do I deploy FastAPI on Kubernetes with Helm charts?
+How do I connect FastAPI to a MongoDB replica set?
+What is the best React state management library?
+How do I configure Django REST Framework serializers?
