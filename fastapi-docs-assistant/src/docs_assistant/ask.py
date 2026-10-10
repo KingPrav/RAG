@@ -70,7 +70,7 @@ def main():
             code = (f" · code grounded {u['n_code_blocks'] - u['n_ungrounded_code_blocks']}/{u['n_code_blocks']}"
                     if u["n_code_blocks"] else "")
             print(f"trace {trace['trace_id'][:8]} · used {u['n_cited']}/{u['n_retrieved']} chunks"
-                  f" · unsupported citations {u['n_unsupported_citations']}{code}")
+                  f" · unsupported claims {u['n_unsupported_claims']}{code}")
 
 
 if __name__ == "__main__":

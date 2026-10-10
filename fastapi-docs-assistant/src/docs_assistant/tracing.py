@@ -69,7 +69,8 @@ def build_trace(result: RAGResult, k: int) -> dict:
             "citations": [c.number for c in result.citations],
             "invalid_citations": result.invalid_citations,
         },
-        "usage": analyze_usage(result.answer, chunks_shown, [c.number for c in result.citations]),
+        "usage": analyze_usage(result.answer, chunks_shown, [c.number for c in result.citations],
+                               answerable=result.answerable),
     }
 
 

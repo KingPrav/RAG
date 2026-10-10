@@ -87,3 +87,18 @@ def test_report_summarizes_traces():
 
 def test_report_handles_no_traces():
     assert summarize([]) == {"traces": 0}
+
+
+def test_report_rescores_traces_logged_with_older_heuristics():
+    from docs_assistant.report import rescore_usage
+    from docs_assistant.usage import USAGE_VERSION
+    old = build_trace(make_result(), k=2)
+    old["usage"] = {"usage_version": 1, "n_uncited_sentences": 1}                # v1 shape
+    texts = {"tutorial/body#request-body": "Use Pydantic models that inherit from BaseModel.",
+             "tutorial/query-params#query": "Query parameters come from the signature."}
+    missing_chunk = build_trace(make_result(), k=2)
+    missing_chunk["usage"] = {"usage_version": 1}
+    missing_chunk["retrieval"]["results"][0]["chunk_id"] = "gone#after-rechunking"
+    assert rescore_usage([old, missing_chunk], texts) == 1
+    assert old["usage"]["usage_version"] == USAGE_VERSION and old["usage"]["n_cited_claims"] == 1
+    assert missing_chunk["usage"] == {"usage_version": 1}                     # left untouched

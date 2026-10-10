@@ -8,7 +8,9 @@ import json
 import statistics
 from collections import Counter
 
+from . import config
 from .tracing import TRACES_PATH, load_traces
+from .usage import USAGE_VERSION, analyze_usage
 
 SIMILARITY_BUCKETS = [0.0, 0.3, 0.4, 0.5, 0.6, 0.7, 1.01]
 
@@ -22,6 +24,31 @@ def percentile(values: list[float], p: float) -> float:
 
 def bucket_label(lo: float, hi: float) -> str:
     return f"{lo:.1f}-{min(hi, 1.0):.1f}"
+
+
+def rescore_usage(traces: list[dict], chunk_texts: dict[str, str]) -> int:
+    """Recompute the usage signals of traces logged with an older version of
+    the heuristics, using the chunk texts by ID. Returns how many were updated.
+    Traces whose chunks no longer exist (re-chunked corpus) are left as is."""
+    updated = 0
+    for t in traces:
+        if t["usage"].get("usage_version") == USAGE_VERSION:
+            continue
+        results = t["retrieval"]["results"]
+        if not all(r["chunk_id"] in chunk_texts for r in results):
+            continue
+        g = t["generation"]
+        t["usage"] = analyze_usage(g["answer"], {r["rank"]: chunk_texts[r["chunk_id"]] for r in results},
+                                   g["citations"], g["answerable"])
+        updated += 1
+    return updated
+
+
+def load_chunk_texts(path=config.PROCESSED_DIR / "chunks.jsonl") -> dict[str, str]:
+    if not path.exists():
+        return {}
+    with path.open() as f:
+        return {(d := json.loads(line))["id"]: d["page_content"] for line in f}
 
 
 def summarize(traces: list[dict], worst_n: int = 10) -> dict:
@@ -39,7 +66,7 @@ def summarize(traces: list[dict], worst_n: int = 10) -> dict:
     cited_counter = Counter(t["retrieval"]["results"][c - 1]["chunk_id"]
                             for t in traces for c in t["generation"]["citations"]
                             if 0 < c <= len(t["retrieval"]["results"]))
-    pairs = sum(u["n_citation_pairs"] for u in use)
+    cited_claims = sum(u["n_cited_claims"] for u in use)
     code_blocks = sum(u["n_code_blocks"] for u in use)
 
     worst = sorted((t for t in traces if t["retrieval"]["results"]),
@@ -65,9 +92,10 @@ def summarize(traces: list[dict], worst_n: int = 10) -> dict:
         "answerable_rate": round(sum(g["answerable"] for g in gen) / n, 3),
         "context_utilization_mean": round(statistics.mean(u["context_utilization"] for u in use), 3),
         "invalid_citation_rate": round(sum(bool(g["invalid_citations"]) for g in gen) / n, 3),
-        "unsupported_citation_rate": round(sum(u["n_unsupported_citations"] for u in use) / pairs, 3) if pairs else None,
-        "answers_with_uncited_sentences": round(
-            sum(1 for g, u in zip(gen, use) if g["answerable"] and u["n_uncited_sentences"]) / n, 3),
+        "unsupported_claim_rate": round(sum(u["n_unsupported_claims"] for u in use) / cited_claims, 3)
+                                  if cited_claims else None,
+        "answers_with_uncited_claims": round(
+            sum(1 for g, u in zip(gen, use) if g["answerable"] and u["n_uncited_claims"]) / n, 3),
         "ungrounded_code_block_rate": round(sum(u["n_ungrounded_code_blocks"] for u in use) / code_blocks, 3)
                                       if code_blocks else None,
         "most_retrieved_chunks": retrieved_counter.most_common(10),
@@ -97,8 +125,8 @@ def print_report(s: dict) -> None:
     print(f"Answerable rate                  {pct(s['answerable_rate'])}")
     print(f"Context utilization (mean)       {pct(s['context_utilization_mean'])} of retrieved chunks cited")
     print(f"Invalid citations                {pct(s['invalid_citation_rate'])} of answers")
-    print(f"Unsupported citations            {pct(s['unsupported_citation_rate'])} of citing sentences")
-    print(f"Answers with uncited sentences   {pct(s['answers_with_uncited_sentences'])}")
+    print(f"Unsupported claims               {pct(s['unsupported_claim_rate'])} of cited claims")
+    print(f"Answers with uncited claims      {pct(s['answers_with_uncited_claims'])}")
     print(f"Ungrounded code blocks           {pct(s['ungrounded_code_block_rate'])}\n")
     print("Most retrieved chunks:")
     for chunk_id, count in s["most_retrieved_chunks"]:
@@ -116,6 +144,9 @@ def main():
     args = parser.parse_args()
 
     traces = load_traces()
+    rescored = rescore_usage(traces, load_chunk_texts())
+    if rescored and not args.json:
+        print(f"(re-scored {rescored} older traces with usage heuristics v{USAGE_VERSION})\n")
     if args.prompt_version:
         traces = [t for t in traces if t["generation"]["prompt_version"] == args.prompt_version]
     summary = summarize(traces)

@@ -170,15 +170,37 @@ Every question writes one JSON line to `data/logs/traces.jsonl`:
 | Signal | Question it answers |
 |---|---|
 | Context utilization | What share of retrieved chunks were cited? |
-| Citation support | For each sentence citing `[n]`, how much of its vocabulary appears in chunk `n`? (< 0.5 = unsupported) |
+| Claim support | For each claim (paragraph or list item) citing `[n][m]`, how much of its vocabulary appears in the cited chunks combined? (< 0.5 = unsupported) |
 | Code grounding | What share of each answer code block's lines appear verbatim in the retrieved chunks? (< 0.8 = ungrounded, i.e. possibly invented API) |
 
-These are lexical triage signals: they miss paraphrase and can reward copying, so they flag
-answers to inspect rather than grade them. Step 7 adds an LLM judge for faithfulness.
+These are lexical triage signals, calibrated in Step 5 against 40 hand-graded answers: they can
+miss heavy paraphrase and reward copying, so they flag answers to inspect rather than grade them.
+Step 7 adds an LLM judge for faithfulness.
 
 `report` summarizes: latency p50/p95 per stage, cost and tokens per query, top-1 similarity
 distribution, answerable rate, context utilization, invalid/unsupported citation rates,
 ungrounded code, the most-retrieved chunks and the weakest-retrieval queries.
+
+## Step 5: failure analysis
+
+```bash
+python -m docs_assistant.review --refused     # print refused answers in full
+python -m docs_assistant.review "API key"     # or search by question text / log position
+```
+
+Full write-up: [`analysis/FAILURE_ANALYSIS.md`](analysis/FAILURE_ANALYSIS.md). Labels:
+[`analysis/failure_labels.csv`](analysis/failure_labels.csv).
+
+- **Method:** open coding of every trace, then axial coding into counted failure modes (Husain &
+  Shankar), mapped to Barnett et al.'s seven RAG failure points.
+- **Baseline on 40 probe questions:** 37 pass / 1 partial / 2 fail; retrieval hit@5 94.3%,
+  hit@1 65.7%, MRR@5 0.765; 0 invalid citations; 6/6 correct refusals.
+- **Main failure mode:** paraphrased intent ("API key on every request", "without logging in")
+  doesn't retrieve the docs' framework vocabulary, causing false refusals. Exact API names, the
+  assumed weak spot, all passed.
+- **Similarity scores don't separate good from bad retrievals**, so there is no score threshold.
+- **Instrumentation calibrated:** the v1 "unsupported citation" (50%) and "uncited sentence" (75%)
+  signals were mostly false alarms; v3 claim-level checks agree with the hand labels (4.7% / 0%).
 
 ## Roadmap
 
@@ -186,7 +208,7 @@ ungrounded code, the most-retrieved chunks and the weakest-retrieval queries.
 2. Chunking ✅, embeddings + vector store ✅
 3. Baseline RAG pipeline ✅
 4. Retrieval instrumentation: queries, chunks, similarity scores, whether the answer used them ✅
-5. Failure analysis
+5. Failure analysis ✅ (labels pending human review)
 6. Ground-truth set: 50–100 Q&A pairs targeting the weak spots
 7. Eval harness: exact match for factual answers, LLM-as-judge for open-ended ones
 8. Improvements, measured against the baseline
