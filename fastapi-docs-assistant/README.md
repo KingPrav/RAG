@@ -202,6 +202,41 @@ Full write-up: [`analysis/FAILURE_ANALYSIS.md`](analysis/FAILURE_ANALYSIS.md). L
 - **Instrumentation calibrated:** the v1 "unsupported citation" (50%) and "uncited sentence" (75%)
   signals were mostly false alarms; v3 claim-level checks agree with the hand labels (4.7% / 0%).
 
+## Step 6: ground-truth eval set
+
+```bash
+python evals/build_golden_v1.py                # regenerate evals/golden_v1.jsonl (+ review sheet)
+python -m docs_assistant.golden validate       # prove every item against the indexed corpus
+```
+
+**80 items** in [`evals/golden_v1.jsonl`](evals/golden_v1.jsonl), weighted toward the weak spots
+found in Step 5:
+
+| Category | Items | Purpose |
+|---|---|---|
+| vocab-mismatch | 20 | User intent in everyday words; answer under framework terms (the main Step 5 failure) |
+| ranking | 10 | A neighboring section shares the words (hit@1 was 65.7%) |
+| exact-fact | 14 | Exact match: ports, URLs, defaults, status codes, packages |
+| exact-term | 8 | Exact API names (confirm they stay strong) |
+| code | 10 | Code answers, checked with code grounding |
+| multi-section | 8 | Answers that need several sections |
+| unanswerable (oos + trap) | 10 | Correct refusal, including plausible-but-not-in-the-docs traps (e.g. "422") |
+
+Each item has a split (`dev` for Step 8 iteration, `test` held out for final numbers), an
+answer type (`exact` → exact match on `exact_accept`; `open` → LLM judge on vital/okay
+**nuggets**; `abstain` → must refuse), **gold sections** at `page#anchor` level (stable across
+re-chunking), and **verbatim evidence quotes**.
+
+`golden validate` (exit code 1 on failure, CI-ready) proves every item against the corpus:
+gold sections exist, every quote appears verbatim in its section, every exact answer appears in
+the evidence, refusal items have no evidence, IDs/questions are unique and splits are balanced per
+category. The validator itself is tested against 13 kinds of bad items.
+
+**Review:** items are written as drafts and approved by a human in
+[`evals/golden_v1_review.csv`](evals/golden_v1_review.csv) (decision: approve / reject / edit),
+merged back by the build script. Gold-section lists may be incomplete where several sections
+answer a question; review should add any missing ones.
+
 ## Roadmap
 
 1. Corpus ingestion ✅
@@ -209,7 +244,7 @@ Full write-up: [`analysis/FAILURE_ANALYSIS.md`](analysis/FAILURE_ANALYSIS.md). L
 3. Baseline RAG pipeline ✅
 4. Retrieval instrumentation: queries, chunks, similarity scores, whether the answer used them ✅
 5. Failure analysis ✅ (labels pending human review)
-6. Ground-truth set: 50–100 Q&A pairs targeting the weak spots
+6. Ground-truth set: 80 verified Q&A pairs targeting the weak spots ✅ (pending human review)
 7. Eval harness: exact match for factual answers, LLM-as-judge for open-ended ones
 8. Improvements, measured against the baseline
 9. CI eval gate + results table
