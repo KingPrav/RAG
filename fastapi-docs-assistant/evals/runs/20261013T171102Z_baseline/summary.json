@@ -1,0 +1,157 @@
+{
+  "n_items": 41,
+  "n_errors": 0,
+  "review_status": {
+    "draft": 41
+  },
+  "overall_pass_rate": {
+    "value": 0.8292682926829268,
+    "ci95": [
+      0.7073170731707317,
+      0.926829268292683
+    ],
+    "n": 41
+  },
+  "answers": {
+    "exact_match": {
+      "value": 1.0,
+      "ci95": [
+        1.0,
+        1.0
+      ],
+      "n": 7
+    },
+    "judge_pass_rate": {
+      "value": 0.75,
+      "ci95": [
+        0.5714285714285714,
+        0.8928571428571429
+      ],
+      "n": 28
+    },
+    "vital_nugget_recall": {
+      "value": 0.8533333333333333,
+      "ci95": [
+        0.7066666666666667,
+        0.96
+      ],
+      "n": 25
+    },
+    "correct_refusal_rate": {
+      "value": 1.0,
+      "ci95": [
+        1.0,
+        1.0
+      ],
+      "n": 6
+    },
+    "false_refusal_rate": {
+      "value": 0.08571428571428572,
+      "ci95": [
+        0.0,
+        0.17142857142857143
+      ],
+      "n": 35
+    }
+  },
+  "retrieval": {
+    "hit@1": {
+      "value": 0.5142857142857142,
+      "ci95": [
+        0.34285714285714286,
+        0.6857142857142857
+      ],
+      "n": 35
+    },
+    "hit@5": {
+      "value": 0.7714285714285715,
+      "ci95": [
+        0.6285714285714286,
+        0.9142857142857143
+      ],
+      "n": 35
+    },
+    "recall@5": {
+      "value": 0.7,
+      "ci95": [
+        0.5571428571428572,
+        0.8333333333333334
+      ],
+      "n": 35
+    },
+    "mrr": {
+      "value": 0.6152380952380953,
+      "ci95": [
+        0.47809523809523813,
+        0.7523809523809524
+      ],
+      "n": 35
+    }
+  },
+  "grounding": {
+    "invalid_citation_rate": {
+      "value": 0.0,
+      "ci95": [
+        0.0,
+        0.0
+      ],
+      "n": 41
+    },
+    "unsupported_claim_rate": 0.05,
+    "ungrounded_code_block_rate": 0.05555555555555555,
+    "judge_verdicts_overridden": 0
+  },
+  "latency_ms": {
+    "retrieve_p50": 246.3,
+    "retrieve_p95": 1467.1,
+    "generate_p50": 2600.3,
+    "generate_p95": 8383.7
+  },
+  "cost_usd": {
+    "answers_total": 0.02053,
+    "answers_per_query": 0.000501,
+    "judge_total": 0.15065
+  },
+  "by_category": {
+    "code": {
+      "n": 5,
+      "pass_rate": 1.0,
+      "hit@5": 0.8
+    },
+    "exact-fact": {
+      "n": 7,
+      "pass_rate": 1.0,
+      "hit@5": 1.0
+    },
+    "exact-term": {
+      "n": 4,
+      "pass_rate": 1.0,
+      "hit@5": 1.0
+    },
+    "multi-section": {
+      "n": 4,
+      "pass_rate": 0.75,
+      "hit@5": 0.75
+    },
+    "ranking": {
+      "n": 5,
+      "pass_rate": 0.8,
+      "hit@5": 0.8
+    },
+    "unanswerable-oos": {
+      "n": 3,
+      "pass_rate": 1.0,
+      "hit@5": null
+    },
+    "unanswerable-trap": {
+      "n": 3,
+      "pass_rate": 1.0,
+      "hit@5": null
+    },
+    "vocab-mismatch": {
+      "n": 10,
+      "pass_rate": 0.5,
+      "hit@5": 0.5
+    }
+  }
+}

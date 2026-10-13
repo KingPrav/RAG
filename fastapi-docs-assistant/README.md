@@ -237,6 +237,42 @@ category. The validator itself is tested against 13 kinds of bad items.
 merged back by the build script. Gold-section lists may be incomplete where several sections
 answer a question; review should add any missing ones.
 
+## Step 7: eval harness
+
+Every golden question goes through the real pipeline (retrieve, then answer), and the output is scored automatically:
+
+| Answer type | How it is scored |
+|---|---|
+| `exact` (factual) | Exact match: does an accepted value (`8000`, `/docs`, `HS256`) appear in the answer? Markdown is stripped; numbers match whole (`500` ≠ `1500`) |
+| `open` | LLM-as-judge (`judge.py`): it writes a critique first, then gives a per-nugget verdict (support / partial / not_support) and a binary pass/fail. A missing vital nugget forces a fail even if the judge says pass |
+| `abstain` | Passes only if the assistant refuses |
+
+The judge is a different model from the answering model (`JUDGE_MODEL`, default `openai:gpt-6.1-sol`), which avoids self-preference bias. Refusals of answerable questions are counted as **false refusals** and are never sent to the judge.
+
+Each run also records:
+- retrieval at section level (hit@1, hit@k, recall@k, MRR);
+- grounding (invalid citations, unsupported claims, ungrounded code);
+- latency p50/p95;
+- cost.
+
+Every headline number carries a **95% bootstrap CI**.
+
+```bash
+python -m docs_assistant.evaluate --split dev --label baseline        # -> evals/runs/<stamp>_baseline/
+python -m docs_assistant.evaluate --rejudge evals/runs/<run>           # new judge prompt, same answers
+python -m docs_assistant.compare evals/runs/<A> evals/runs/<B>         # paired bootstrap, fixed/broken items
+python -m docs_assistant.calibrate export evals/runs/<run>             # label judge outputs yourself
+python -m docs_assistant.calibrate score                               # judge TPR / TNR vs. you
+```
+
+Each run folder holds four files:
+- `config.json`: models, prompt hashes, golden-set hash, corpus and code commits;
+- `results.jsonl`: one row per question;
+- `summary.json`;
+- `summary.md`.
+
+The `test` split is sealed. It runs only with `--confirm-test` and is meant for the final number, not for tuning.
+
 ## Roadmap
 
 1. Corpus ingestion ✅
@@ -245,6 +281,6 @@ answer a question; review should add any missing ones.
 4. Retrieval instrumentation: queries, chunks, similarity scores, whether the answer used them ✅
 5. Failure analysis ✅ (labels pending human review)
 6. Ground-truth set: 80 verified Q&A pairs targeting the weak spots ✅ (pending human review)
-7. Eval harness: exact match for factual answers, LLM-as-judge for open-ended ones
+7. Eval harness: exact match for factual answers, LLM-as-judge for open-ended ones ✅
 8. Improvements, measured against the baseline
 9. CI eval gate + results table

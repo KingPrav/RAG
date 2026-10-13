@@ -78,3 +78,15 @@ CHAT_MODEL = os.getenv("CHAT_MODEL", "gpt-6-luna")
 # OpenAI's pricing page and update these if you change model.
 CHAT_USD_PER_1M_INPUT = float(os.getenv("CHAT_USD_PER_1M_INPUT", "0.20"))
 CHAT_USD_PER_1M_OUTPUT = float(os.getenv("CHAT_USD_PER_1M_OUTPUT", "1.20"))
+
+# ---- Step 7: evaluation
+# The judge should be stronger than the answering model and, ideally, from a
+# different provider (self-preference bias). "provider:model" format, e.g.
+# "openai:gpt-6.1-sol" or "anthropic:<model>" (needs langchain-anthropic + key).
+JUDGE_MODEL = os.getenv("JUDGE_MODEL", "openai:gpt-6.1-sol")
+JUDGE_USD_PER_1M_INPUT = float(os.getenv("JUDGE_USD_PER_1M_INPUT", "5.00"))
+JUDGE_USD_PER_1M_OUTPUT = float(os.getenv("JUDGE_USD_PER_1M_OUTPUT", "30.00"))
+EVAL_RUNS_DIR = ROOT / "evals" / "runs"
+EVAL_WORKERS = int(os.getenv("EVAL_WORKERS", "4"))      # questions answered in parallel
+BOOTSTRAP_RESAMPLES = 5000
+
