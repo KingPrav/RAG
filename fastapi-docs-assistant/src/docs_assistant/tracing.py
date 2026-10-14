@@ -23,7 +23,7 @@ from . import config
 from .rag import SYSTEM_PROMPT, RAGResult
 from .usage import analyze_usage
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2          # 2: retrieval settings, searched queries, per-chunk source
 TRACES_PATH = config.DATA_DIR / "logs" / "traces.jsonl"
 
 
@@ -32,7 +32,7 @@ def prompt_version() -> str:
     return hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest()[:10]
 
 
-def build_trace(result: RAGResult, k: int) -> dict:
+def build_trace(result: RAGResult, k: int, settings: dict | None = None) -> dict:
     hits = result.retrieved
     first = hits[0].document.metadata if hits else {}
     chunks_shown = {h.rank: h.document.page_content for h in hits}
@@ -49,10 +49,15 @@ def build_trace(result: RAGResult, k: int) -> dict:
         },
         "retrieval": {
             "k": k,
+            "settings": settings,
+            "queries": result.queries,
+            "rewrite_ms": round(result.rewrite_ms, 1),
+            "rewrite_error": result.rewrite_error,
             "latency_ms": round(result.retrieve_ms, 1),
             "results": [
                 {"rank": h.rank, "chunk_id": h.chunk_id, "doc_id": h.document.metadata.get("doc_id"),
-                 "similarity": round(h.similarity, 4), "n_tokens": h.document.metadata.get("n_tokens")}
+                 "similarity": round(h.similarity, 4), "n_tokens": h.document.metadata.get("n_tokens"),
+                 "source": h.source}
                 for h in hits
             ],
         },
@@ -74,11 +79,11 @@ def build_trace(result: RAGResult, k: int) -> dict:
     }
 
 
-def log_result(result: RAGResult, k: int, path: Path = TRACES_PATH) -> dict | None:
+def log_result(result: RAGResult, k: int, path: Path = TRACES_PATH, settings: dict | None = None) -> dict | None:
     """Build and append a trace. Logging must never break answering, so any
     failure is reported and swallowed."""
     try:
-        trace = build_trace(result, k)
+        trace = build_trace(result, k, settings)
         append_trace(trace, path)
         return trace
     except Exception as e:                       # noqa: BLE001 - deliberate

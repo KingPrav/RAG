@@ -31,14 +31,14 @@ def make_result(question="How do I declare a request body?", top=0.62, answerabl
 
 def test_trace_has_separate_retrieval_and_generation_sections():
     t = build_trace(make_result(), k=5)
-    assert t["schema_version"] == 1 and len(t["trace_id"]) == 32
+    assert t["schema_version"] == 2 and len(t["trace_id"]) == 32
     assert t["corpus"]["source_commit"] == "abc123"
     assert t["corpus"]["collection"] == config.COLLECTION_NAME
     r = t["retrieval"]
     assert r["k"] == 5 and r["latency_ms"] == 120.0
     assert [x["chunk_id"] for x in r["results"]] == ["tutorial/body#request-body", "tutorial/query-params#query"]
     assert r["results"][0] == {"rank": 1, "chunk_id": "tutorial/body#request-body", "doc_id": "tutorial/body",
-                               "similarity": 0.62, "n_tokens": 40}
+                               "similarity": 0.62, "n_tokens": 40, "source": "search"}
     g = t["generation"]
     assert g["prompt_version"] == prompt_version() and len(g["prompt_version"]) == 10
     assert (g["input_tokens"], g["output_tokens"], g["context_tokens"]) == (1000, 100, 80)

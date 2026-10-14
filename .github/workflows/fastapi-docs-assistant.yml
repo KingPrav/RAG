@@ -1,0 +1,111 @@
+# CI for fastapi-docs-assistant (Step 9).
+#
+#   tests      every push / PR touching the project: 100+ offline tests, no secrets, free.
+#   eval-gate  PRs from this repo + manual runs: rebuild the index (cached), run the dev
+#              eval with the real models (~$0.20), and block the merge if quality regresses
+#              against the committed baseline (policy: evals/gate.json).
+#
+# Needs the repository secret OPENAI_API_KEY (Settings -> Secrets and variables -> Actions).
+name: fastapi-docs-assistant
+
+on:
+  push:
+    branches: [main]
+    paths: ["fastapi-docs-assistant/**", ".github/workflows/fastapi-docs-assistant.yml"]
+  pull_request:
+    paths: ["fastapi-docs-assistant/**", ".github/workflows/fastapi-docs-assistant.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:                       # a new push to the same PR cancels the old (paid) run
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: fastapi-docs-assistant
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: fastapi-docs-assistant/pyproject.toml
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m pytest -q
+
+  eval-gate:
+    needs: tests
+    # Secrets are never given to PRs from forks; run only for this repo's own branches.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: fastapi-docs-assistant/pyproject.toml
+      - run: python -m pip install -e ".[dev]"
+
+      - name: Check the API key secret is set
+        run: |
+          if [ -z "$OPENAI_API_KEY" ]; then
+            echo "::error::Add the OPENAI_API_KEY repository secret to run the eval gate."
+            exit 1
+          fi
+
+      # The corpus is pinned to one FastAPI commit, so the index only changes when
+      # ingestion/chunking/indexing code changes. Re-running on a cache hit is a no-op
+      # (the record manager skips unchanged chunks), so no embeddings are paid for.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            fastapi-docs-assistant/data/raw
+            fastapi-docs-assistant/data/processed
+            fastapi-docs-assistant/data/index
+          key: corpus-index-${{ hashFiles('fastapi-docs-assistant/src/docs_assistant/config.py', 'fastapi-docs-assistant/src/docs_assistant/fetch.py', 'fastapi-docs-assistant/src/docs_assistant/markdown_clean.py', 'fastapi-docs-assistant/src/docs_assistant/loader.py', 'fastapi-docs-assistant/src/docs_assistant/ingest.py', 'fastapi-docs-assistant/src/docs_assistant/chunk.py', 'fastapi-docs-assistant/src/docs_assistant/tokens.py', 'fastapi-docs-assistant/src/docs_assistant/index.py', 'fastapi-docs-assistant/src/docs_assistant/vectorstore.py') }}
+
+      - name: Build corpus and index
+        run: |
+          python -m docs_assistant.fetch
+          python -m docs_assistant.ingest
+          python -m docs_assistant.chunk
+          python -m docs_assistant.index
+          python -m docs_assistant.golden validate
+
+      - name: Run the dev eval
+        id: eval
+        run: |
+          python -m docs_assistant.evaluate --split dev --label ci
+          echo "run_dir=$(ls -d evals/runs/*_ci | tail -1)" >> "$GITHUB_OUTPUT"
+
+      - name: Gate against the baseline
+        run: |
+          set -o pipefail
+          python -m docs_assistant.gate "${{ steps.eval.outputs.run_dir }}" | tee gate.md
+
+      - name: Write the report to the job summary
+        if: always() && steps.eval.outputs.run_dir != ''
+        run: |
+          cat gate.md >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+          cat "${{ steps.eval.outputs.run_dir }}/summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.eval.outputs.run_dir != ''
+        with:
+          name: eval-run
+          path: fastapi-docs-assistant/${{ steps.eval.outputs.run_dir }}

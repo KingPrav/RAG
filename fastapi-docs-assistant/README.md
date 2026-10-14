@@ -273,6 +273,81 @@ Each run folder holds four files:
 
 The `test` split is sealed. It runs only with `--confirm-test` and is meant for the final number, not for tuning.
 
+## Step 8: retrieval improvements, each one measured
+
+The Step 7 baseline put the weak spot on paraphrased ("vocab-mismatch") questions: they passed 5 of 10. Reading the misses one by one showed two different problems:
+
+- **Right page, wrong section** (most misses). Search found the "use case" intro of the lifespan page, while the code was in the next section. The model then refused because "the excerpt doesn't include the code".
+- **True vocabulary gap.** "Redirect after a form" never mentions `RedirectResponse`, and "time every request" never mentions middleware.
+
+Candidate fixes were tested **offline first** on the dev set, before spending anything on API calls:
+
+| Strategy (top 5) | Gold section in the model's context | Paraphrased questions |
+|---|---|---|
+| Baseline (vectors) | 77.1% | 50% |
+| BM25 keyword search | 57.1% | 40% |
+| Hybrid BM25 + vectors (RRF) | 74.3% | 40% |
+| Vectors + neighbor sections ±1 | **85.7%** | **60%** |
+
+**Hybrid search, the textbook fix, was rejected.** It rescued none of the misses. Paraphrases fail because the user's words are *absent* from the docs, and keyword matching can't bridge that.
+
+What was built (`retrieval.py`). Both changes were switched on as defaults after the dev eval below; set `RETRIEVAL_NEIGHBORS=0 QUERY_REWRITE=0` to reproduce the baseline:
+
+| Change | What it does | Cost |
+|---|---|---|
+| **8a Neighbor expansion** (`--neighbors 1`) | Each search hit is sent with the sections just before and after it on the same page, in page order, under a 6,000-token cap | No extra calls; about 2x context tokens |
+| **8b Query rewriting** (`--rewrite`) | An LLM rewrites the question into FastAPI's vocabulary (3 queries). Original + rewrites are searched and fused with reciprocal rank fusion. The original is always kept, and a failed rewrite falls back to it | 1 small LLM call (~$0.0002, ~1 s) |
+
+Fusion is about ten lines written by hand rather than LangChain's `EnsembleRetriever`, because that drops the similarity scores the Step 4 traces log. Traces now also record which queries were searched and whether each chunk came from search or neighbor expansion. Retrieval metrics are split into two kinds:
+- **Ranking** (hit@k, MRR): did *search* put the right section near the top?
+- **Gold in context**: did the model *see* it, neighbors included?
+
+```bash
+python -m docs_assistant.retrieval_eval --split dev                      # cheap: retrieval only, 5 strategies
+python -m docs_assistant.evaluate --split dev --label n1 --neighbors 1   # full eval of a candidate
+python -m docs_assistant.compare evals/runs/<baseline> evals/runs/<n1>   # paired: real gain or noise?
+```
+
+A change ships only if `compare` shows the gain is real on dev. Then its setting becomes the default in `config.py`, its run becomes the gate baseline, and the sealed test split is run once for the headline number.
+
+## Step 9: CI eval gate + results table
+
+`.github/workflows/fastapi-docs-assistant.yml` (at the repo root) has two jobs:
+
+| Job | When | What |
+|---|---|---|
+| `tests` | Every push / PR touching the project | 120+ offline tests. No API key, free |
+| `eval-gate` | PRs from this repo, manual runs | Rebuild the index (cached; re-runs embed nothing), run the dev eval with the real models (~$0.20), then `python -m docs_assistant.gate`. The report lands on the run's summary page and the run folder is uploaded as an artifact |
+
+The gate (`evals/gate.json`) blocks a merge on any of three kinds of check:
+
+1. **Infrastructure:** errored items, or baseline items that were never evaluated. Missing results are failures, never silently dropped.
+2. **Hard floors:** any invalid citation, any unanswerable trap that was answered, or an overall pass rate below 70%.
+3. **Regression:** a **statistically significant** drop against the committed baseline, on the same items (paired bootstrap on pass/fail and gold-in-context).
+
+**Why "significant drop" and not a fixed margin?** With about 40 dev items, ordinary run-to-run noise (a few answers flipping each way) gives a confidence interval roughly ±12 points wide. A tight margin would block good changes constantly. The gate catches real regressions (several items broken, few fixed) without crying wolf; a test proves both cases.
+
+The results table below is generated, not typed:
+
+```bash
+python -m docs_assistant.results evals/runs/<baseline> evals/runs/<n1> evals/runs/<final> --write-readme
+```
+
+## Results
+
+<!-- results:start -->
+| Run | Split | Retrieval | Pass rate [95% CI] | Δ vs first | Paraphrased pass | Gold in context | False refusals | $/query | p50 latency |
+|---|---|---|---|---|---|---|---|---|---|
+| baseline | dev | k=5 | 82.9% [71%–93%] | - | 5/10 | 77.1% [63%–91%] | 8.6% [0%–20%] | $0.00050 | 2,847 ms |
+| n1 | dev | k=5, neighbors ±1 | 82.9% [71%–93%] | +0.0% | 5/10 | 85.7% [74%–97%] | 2.9% [0%–9%] | $0.00084 | 2,834 ms |
+| rw-n1 | dev | k=5, neighbors ±1, query rewrite | 90.2% [80%–98%] | +7.3% | 8/10 | 94.3% [86%–100%] | 0.0% [0%–0%] | $0.00098 | 4,451 ms |
+| final | test | k=5, neighbors ±1, query rewrite | 87.2% [74%–97%] | - | 6/10 | 91.4% [80%–100%] | 8.6% [0%–20%] | $0.00095 | 4,482 ms |
+
+`*` = the 95% CI of the paired difference excludes zero.
+
+_39 golden items in the last run are unreviewed drafts; numbers are provisional._
+<!-- results:end -->
+
 ## Roadmap
 
 1. Corpus ingestion ✅
@@ -282,5 +357,5 @@ The `test` split is sealed. It runs only with `--confirm-test` and is meant for 
 5. Failure analysis ✅ (labels pending human review)
 6. Ground-truth set: 80 verified Q&A pairs targeting the weak spots ✅ (pending human review)
 7. Eval harness: exact match for factual answers, LLM-as-judge for open-ended ones ✅
-8. Improvements, measured against the baseline
-9. CI eval gate + results table
+8. Improvements, measured against the baseline ✅ (shipped: rewrite + neighbors ±1)
+9. CI eval gate + results table ✅

@@ -1,12 +1,9 @@
 """End-to-end harness test: real retrieval over a tiny index, with stand-ins for
 the embedding model, the answering model and the judge (offline, free)."""
 import csv
-import re
-import zlib
 
 import pytest
 from langchain_core.documents import Document
-from langchain_core.embeddings import Embeddings
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 
@@ -61,27 +58,9 @@ ANSWERS = {
 }
 
 
-class BagOfWordsEmbedding(Embeddings):
-    """Stand-in embedder where shared words mean closeness (unlike random fake
-    vectors), so retrieval ranks are predictable in tests."""
-    size = 256
-
-    def _embed(self, text: str) -> list[float]:
-        vec = [0.0] * self.size
-        for word in re.findall(r"[a-z0-9_]+", text.lower()):
-            vec[zlib.crc32(word.encode()) % self.size] += 1.0
-        return vec
-
-    def embed_documents(self, texts):
-        return [self._embed(t) for t in texts]
-
-    def embed_query(self, text):
-        return self._embed(text)
-
-
 @pytest.fixture
-def vectorstore(tmp_path):
-    vs = get_vectorstore(BagOfWordsEmbedding(), tmp_path / "chroma", "test-docs")
+def vectorstore(tmp_path, bow_embedding):
+    vs = get_vectorstore(bow_embedding, tmp_path / "chroma", "test-docs")
     build_index([chunk(s) for s in TEXTS], vs, get_record_manager(tmp_path / "rm.sqlite", "test-docs"))
     return vs
 
@@ -206,3 +185,66 @@ def test_calibration_export_and_tpr_tnr(rows, tmp_path):
     s = score(labels)
     assert (s["n_labeled"], s["tpr"], s["tnr"]) == (3, 1.0, 0.5)
     assert s["disagreements"] == ["b"]
+
+
+# ---------------------------------------------------------------- Step 9: gate + results table
+
+POLICY = {"baseline_run": "unused", "regression": {"metrics": ["pass", "gold_in_context"]},
+          "floors": {"max_errors": 0, "max_invalid_citation_rate": 0.0, "min_correct_refusal_rate": 1.0,
+                     "min_overall_pass_rate": 0.5}}
+
+
+def run(rows, **cfg):
+    return ({"k": 3, "label": "run", "split": "dev", **cfg}, rows)
+
+
+def test_gate_passes_an_identical_run(rows):
+    from docs_assistant.gate import check
+    report = check(run(rows, label="base"), run(rows, label="cand"), POLICY, resamples=300)
+    assert report["passed"] and all(c["ok"] for c in report["checks"])
+
+
+def test_gate_blocks_missing_items_and_broken_floors(rows):
+    from docs_assistant.gate import check
+    trap_answered = [dict(r, passed=False) if r["id"] == "trap-001" else r for r in rows[:-1]] + \
+                    [dict(rows[-1], passed=False)]
+    report = check(run(rows), run(trap_answered[1:]), POLICY, resamples=300)
+    failed = {c["name"] for c in report["checks"] if not c["ok"]}
+    assert not report["passed"]
+    assert "Every baseline item evaluated" in failed                                 # fact-001 missing
+    assert "Unanswerable questions refused" in failed
+
+
+def test_gate_blocks_a_significant_regression_but_not_noise():
+    from docs_assistant.gate import check
+    def rows_(passes):
+        return [{"id": f"q{i}", "category": "c", "answer_type": "abstain" if i == 0 else "exact",
+                 "review_status": "draft", "passed": p, "exact_match": p, "invalid_citations": [],
+                 "usage": {"n_cited_claims": 0, "n_unsupported_claims": 0, "n_code_blocks": 0,
+                           "n_ungrounded_code_blocks": 0},
+                 "answer_cost_usd": 0.0, "retrieve_ms": 1.0, "generate_ms": 1.0, "false_refusal": False,
+                 "retrieval": None if i == 0 else {"hit@1": True, "hit@3": True, "recall@3": 1.0,
+                                                   "reciprocal_rank": 1.0, "context_hit": True}}
+                for i, p in enumerate(passes)]
+    base = [True] * 34 + [False] * 6
+    noise = [True] * 31 + [False] * 3 + [True] * 2 + [False] * 4     # 3 break, 2 fix: ordinary run-to-run noise
+    broken = [True] * 24 + [False] * 16                               # 10 break, none fixed: a real regression
+    policy = dict(POLICY, floors=dict(POLICY["floors"], min_overall_pass_rate=0.0))
+    assert check(run(rows_(base)), run(rows_(noise)), policy, resamples=2000)["passed"]
+    report = check(run(rows_(base)), run(rows_(broken)), policy, resamples=2000)
+    assert not report["passed"] and len(report["broken"]) == 10
+
+
+def test_results_table_and_readme_block(rows, tmp_path):
+    from docs_assistant.results import END, START, table, write_readme
+    better = [dict(r, passed=True) for r in rows]
+    md = table([run(rows, label="baseline"), run(better, label="n1", neighbors=1)])
+    lines = md.splitlines()
+    assert "| baseline | dev | k=3 | 75.0%" in lines[2] and "| - |" in lines[2]
+    assert "neighbors ±1" in lines[3] and "+25.0%" in lines[3]
+    readme = tmp_path / "README.md"
+    readme.write_text("# X\n\n## Roadmap\n")
+    write_readme(md, readme)
+    write_readme("new table", readme)                                                # replaced, not appended
+    text = readme.read_text()
+    assert text.count(START) == 1 and "new table" in text and "| baseline |" not in text and END in text

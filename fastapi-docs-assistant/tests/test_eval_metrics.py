@@ -36,7 +36,13 @@ def test_section_of_strips_part_suffix():
 def test_retrieval_scores_at_section_level():
     retrieved = ["a#x", "b#y/1", "c#z", "b#y/2", "d#w"]
     s = retrieval_scores(retrieved, ["b#y", "e#q"], k=5)
-    assert s == {"hit@1": False, "hit@5": True, "recall@5": 0.5, "reciprocal_rank": 0.5, "first_gold_rank": 2}
+    assert s == {"context_hit": True, "hit@1": False, "hit@5": True, "recall@5": 0.5, "reciprocal_rank": 0.5,
+                 "first_gold_rank": 2}
+
+
+def test_context_hit_counts_neighbor_sections_but_ranking_does_not():
+    s = retrieval_scores(["a#x", "b#y"], ["c#z"], k=2, context_chunk_ids=["a#x", "c#z/1", "b#y"])
+    assert s["context_hit"] and not s["hit@2"] and s["reciprocal_rank"] == 0.0
 
 
 def test_retrieval_miss_and_rank_one_hit():

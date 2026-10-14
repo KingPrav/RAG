@@ -67,6 +67,21 @@ INDEX_BATCH_SIZE = 100
 
 # ---- Retrieval
 TOP_K = 5
+CHUNKS_PATH = PROCESSED_DIR / "chunks.jsonl"
+
+# Step 8 retrieval changes, both ON since the dev eval (see README Results):
+# gold-in-context 77.1% -> 94.3% (significant), pass rate 82.9% -> 90.2%.
+# Set RETRIEVAL_NEIGHBORS=0 / QUERY_REWRITE=0 in .env to reproduce the baseline.
+#   neighbors: also send the N sections before/after each hit on the same page
+#              ("right page, wrong section" fix). 0 = off.
+#   rewrite:   an LLM rewrites the question into FastAPI's vocabulary; the
+#              original + rewrites are searched and fused (paraphrase fix).
+RETRIEVAL_NEIGHBORS = int(os.getenv("RETRIEVAL_NEIGHBORS", "1"))
+QUERY_REWRITE = os.getenv("QUERY_REWRITE", "1").lower() in ("1", "true", "yes")
+N_REWRITES = 3
+FUSION_DEPTH = 10              # results per query fed into rank fusion
+RRF_K = 60                     # reciprocal rank fusion constant (Cormack et al., 2009)
+CONTEXT_MAX_TOKENS = 6000      # cap on what neighbor expansion may add
 
 # ---- Step 3: generation
 # OpenAI's pages disagree on the exact identifier of the cheapest current tier

@@ -13,7 +13,16 @@ from .eval_metrics import paired_bootstrap
 from .evaluate import load_run
 
 CONFIG_KEYS = ("chat_model", "judge_model", "prompt_version", "judge_prompt_version", "k", "collection",
-               "embedding_model", "chunk_max_tokens", "corpus_commit", "golden_sha256", "split")
+               "embedding_model", "chunk_max_tokens", "corpus_commit", "golden_sha256", "split",
+               "neighbors", "rewrite", "n_rewrites")
+# Runs made before Step 8 don't record these; they ran with the features off.
+CONFIG_DEFAULTS = {"neighbors": 0, "rewrite": False, "n_rewrites": None}
+
+
+def setting(cfg: dict, key: str):
+    if key == "n_rewrites" and not cfg.get("rewrite"):
+        return None                            # irrelevant when rewriting is off
+    return cfg.get(key, CONFIG_DEFAULTS.get(key))
 
 
 def metrics(row: dict, k: int) -> dict:
@@ -24,6 +33,7 @@ def metrics(row: dict, k: int) -> dict:
         "hit@1": float(ret["hit@1"]) if ret else None,
         f"hit@{k}": float(ret[f"hit@{k}"]) if ret else None,
         "mrr": ret.get("reciprocal_rank") if ret else None,
+        "gold_in_context": float(ret.get("context_hit", ret[f"hit@{k}"])) if ret else None,
         "vital_nugget_recall": nug.get("vital_strict"),
         "false_refusal": float(row["false_refusal"]) if row.get("false_refusal") is not None else None,
     }
@@ -44,8 +54,8 @@ def compare(run_a: tuple[dict, list[dict]], run_b: tuple[dict, list[dict]], resa
                                         resamples=resamples)
     return {
         "n_shared": len(shared),
-        "config_changes": {key: (cfg_a.get(key), cfg_b.get(key)) for key in CONFIG_KEYS
-                           if cfg_a.get(key) != cfg_b.get(key)},
+        "config_changes": {key: (setting(cfg_a, key), setting(cfg_b, key)) for key in CONFIG_KEYS
+                           if setting(cfg_a, key) != setting(cfg_b, key)},
         "deltas": deltas,
         "fixed": [i for i in shared if not a_by_id[i]["passed"] and b_by_id[i]["passed"]],
         "broken": [i for i in shared if a_by_id[i]["passed"] and not b_by_id[i]["passed"]],

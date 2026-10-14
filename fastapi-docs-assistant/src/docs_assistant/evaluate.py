@@ -29,6 +29,7 @@ from . import config
 from .eval_metrics import bootstrap_ci, exact_match, mean, nugget_scores, retrieval_scores
 from .golden import GOLDEN_PATH, GoldenItem, load_items, load_sections, validate
 from .judge import judge_answer, judge_prompt_version
+from .ask import add_retrieval_args
 from .rag import answer_question
 from .tracing import prompt_version
 from .usage import USAGE_VERSION, analyze_usage
@@ -37,14 +38,17 @@ from .usage import USAGE_VERSION, analyze_usage
 # ---------------------------------------------------------------- scoring one item
 
 def score_item(item: GoldenItem, result, judge, k: int) -> dict:
-    hits = result.retrieved
+    hits = result.retrieved                      # everything the model was shown
     cited = [c.number for c in result.citations]
     row = {
         "id": item.id, "split": item.split, "category": item.category, "answer_type": item.answer_type,
         "review_status": item.review.status, "question": item.question,
         "answer": result.answer, "answerable_predicted": result.answerable,
         "citations": cited, "invalid_citations": result.invalid_citations,
-        "retrieved": [{"rank": h.rank, "chunk_id": h.chunk_id, "similarity": round(h.similarity, 4)} for h in hits],
+        "retrieved": [{"rank": h.rank, "chunk_id": h.chunk_id, "similarity": round(h.similarity, 4),
+                       "source": h.source} for h in hits],
+        "queries": result.queries, "rewrite_error": result.rewrite_error,
+        "context_tokens": sum(h.document.metadata.get("n_tokens", 0) for h in hits),
         "retrieve_ms": round(result.retrieve_ms, 1), "generate_ms": round(result.generate_ms, 1),
         "input_tokens": result.input_tokens, "output_tokens": result.output_tokens,
         "answer_cost_usd": round(result.cost_usd, 6),
@@ -55,7 +59,8 @@ def score_item(item: GoldenItem, result, judge, k: int) -> dict:
     }
 
     if item.answer_type != "abstain":
-        row["retrieval"] = retrieval_scores([h.chunk_id for h in hits], item.gold_sections, k)
+        row["retrieval"] = retrieval_scores([h.chunk_id for h in result.search_hits], item.gold_sections, k,
+                                            context_chunk_ids=[h.chunk_id for h in hits])
         row["false_refusal"] = not result.answerable
 
     if item.answer_type == "abstain":
@@ -89,10 +94,10 @@ def error_row(item: GoldenItem, error: Exception) -> dict:
 # ---------------------------------------------------------------- running
 
 def run_items(items: list[GoldenItem], vectorstore, generator, judge, *, k: int, workers: int = 1,
-              progress=print) -> list[dict]:
+              progress=print, retriever=None) -> list[dict]:
     def one(item: GoldenItem) -> dict:
         try:
-            result = answer_question(item.question, vectorstore, generator, k=k)
+            result = answer_question(item.question, vectorstore, generator, k=k, retriever=retriever)
             return score_item(item, result, judge, k)
         except Exception as e:                 # one failing question must not sink the run
             return error_row(item, e)
@@ -159,6 +164,10 @@ def summarize(rows: list[dict], k: int, resamples: int = config.BOOTSTRAP_RESAMP
             f"hit@{k}": R(answerable, lambda r: r["retrieval"][f"hit@{k}"]),
             f"recall@{k}": R(answerable, lambda r: r["retrieval"][f"recall@{k}"]),
             "mrr": R(answerable, lambda r: r["retrieval"]["reciprocal_rank"]),
+            # Older runs have no context_hit; without expansion it equals hit@k.
+            "context_recall": R(answerable, lambda r: r["retrieval"].get("context_hit", r["retrieval"][f"hit@{k}"])),
+            "context_tokens_p50": percentile([r.get("context_tokens") for r in ok], .5),
+            "rewrite_errors": sum(1 for r in ok if r.get("rewrite_error")),
         },
         "grounding": {
             "invalid_citation_rate": R(ok, lambda r: bool(r["invalid_citations"])),
@@ -220,6 +229,10 @@ def render_markdown(summary: dict, cfg: dict) -> str:
         f"k={k} · prompt `{cfg['prompt_version']}` · judge prompt `{cfg['judge_prompt_version']}` · "
         f"golden `{cfg['golden_sha256'][:10]}` · docs `{(cfg['corpus_commit'] or '')[:10]}`",
         "",
+        f"Retrieval: neighbors ±{cfg.get('neighbors', 0)} · query rewrite {'on' if cfg.get('rewrite') else 'off'}"
+        + (f" · context p50 {r['context_tokens_p50']} tokens" if r.get("context_tokens_p50") else "")
+        + (f" · {r['rewrite_errors']} rewrite errors (fell back to original query)" if r.get("rewrite_errors") else ""),
+        "",
     ]
     if drafts:
         lines += [f"> **{drafts} of {s['n_items']} golden items are unreviewed drafts.** "
@@ -238,6 +251,7 @@ def render_markdown(summary: dict, cfg: dict) -> str:
         f"| Retrieval hit@{k} | {fmt(r[f'hit@{k}'])} |",
         f"| Retrieval recall@{k} | {fmt(r[f'recall@{k}'])} |",
         f"| MRR@{k} | {fmt(r['mrr'], pct=False)} |",
+        f"| Gold section in context | {fmt(r.get('context_recall'))} |",
         f"| Invalid citations | {fmt(g['invalid_citation_rate'])} |",
         f"| Unsupported claims (lexical check) | {fmt(g['unsupported_claim_rate'])} |",
         f"| Ungrounded code blocks | {fmt(g['ungrounded_code_block_rate'])} |",
@@ -310,7 +324,7 @@ def main():
     parser.add_argument("--split", choices=["dev", "test", "all"], default="dev")
     parser.add_argument("--label", default="run")
     parser.add_argument("--golden", type=Path, default=GOLDEN_PATH)
-    parser.add_argument("-k", type=int, default=config.TOP_K)
+    add_retrieval_args(parser)
     parser.add_argument("--limit", type=int, help="only the first N items (smoke test)")
     parser.add_argument("--ids", help="comma-separated item ids")
     parser.add_argument("--workers", type=int, default=config.EVAL_WORKERS)
@@ -318,7 +332,7 @@ def main():
     parser.add_argument("--confirm-test", action="store_true", help="required to run the held-out test split")
     args = parser.parse_args()
 
-    from .ask import explain_model_error, load_pipeline
+    from .ask import explain_model_error, load_pipeline, settings_from_args
     from .judge import build_judge, get_judge_model
 
     items, corpus_commit = load_golden(args.golden)
@@ -345,21 +359,26 @@ def main():
     if args.limit:
         items = items[: args.limit]
 
+    settings = settings_from_args(args)
     n_open = sum(i.answer_type == "open" for i in items)
-    estimate = len(items) * 1500 * config.CHAT_USD_PER_1M_INPUT / 1e6 + n_open * (
+    context = 1500 * (1 + 1.2 * settings.neighbors) + (400 if settings.rewrite else 0)
+    estimate = len(items) * context * config.CHAT_USD_PER_1M_INPUT / 1e6 + n_open * (
         2000 * config.JUDGE_USD_PER_1M_INPUT + 400 * config.JUDGE_USD_PER_1M_OUTPUT) / 1e6
     print(f"Evaluating {len(items)} items ({args.split}) · answer {config.CHAT_MODEL} · judge {config.JUDGE_MODEL}"
+          f" · neighbors ±{settings.neighbors} · rewrite {'on' if settings.rewrite else 'off'}"
           f" · ~${estimate:.2f} estimated\n")
 
-    vectorstore, generator = load_pipeline()
+    vectorstore, generator, retriever = load_pipeline(settings)
     started = time.perf_counter()
     try:
-        rows = run_items(items, vectorstore, generator, judge, k=args.k, workers=args.workers)
+        rows = run_items(items, vectorstore, generator, judge, k=args.k, workers=args.workers,
+                         retriever=retriever)
     except Exception as e:
         explain_model_error(e)
         raise
     cfg = run_config(label=args.label, split=args.split, k=args.k, golden_path=args.golden,
-                     corpus_commit=corpus_commit, extra={"wall_seconds": round(time.perf_counter() - started, 1)})
+                     corpus_commit=corpus_commit,
+                     extra={**settings.describe(), "wall_seconds": round(time.perf_counter() - started, 1)})
     run_dir = write_run(rows, cfg)
     errors = [r for r in rows if r.get("error")]
     print("\n" + (run_dir / "summary.md").read_text())

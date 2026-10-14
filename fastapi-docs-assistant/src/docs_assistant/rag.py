@@ -19,7 +19,8 @@ from langchain_core.runnables import Runnable
 from pydantic import BaseModel, Field
 
 from . import config
-from .search import Hit, retrieve
+from .retrieval import RetrievalSettings, Retriever
+from .search import Hit
 
 SYSTEM_PROMPT = """You are a support assistant for developers using the FastAPI web framework.
 
@@ -65,8 +66,15 @@ class RAGResult:
     model: str = ""
     retrieve_ms: float = 0.0
     generate_ms: float = 0.0
-    input_tokens: int = 0
+    input_tokens: int = 0              # answer call + query rewrite call (same model)
     output_tokens: int = 0
+    queries: list[str] = field(default_factory=list)      # what was searched (original first)
+    rewrite_ms: float = 0.0                                # part of retrieve_ms
+    rewrite_error: str | None = None
+
+    @property
+    def search_hits(self) -> list[Hit]:
+        return [h for h in self.retrieved if h.source == "search"]
 
     @property
     def total_ms(self) -> float:
@@ -105,14 +113,19 @@ def validate_citations(parsed: GeneratedAnswer, hits: list[Hit]) -> tuple[list[C
 
 
 def answer_question(question: str, vectorstore, generator: Runnable, *, k: int = config.TOP_K,
-                    model_name: str = config.CHAT_MODEL) -> RAGResult:
+                    model_name: str = config.CHAT_MODEL, retriever: Retriever | None = None) -> RAGResult:
+    """Without a retriever this is the Step 3 baseline: plain top-k vector search."""
+    retriever = retriever or Retriever(vectorstore, RetrievalSettings(k=k, neighbors=0, rewrite=False))
     started = time.perf_counter()
-    hits = retrieve(vectorstore, question, k=k)
+    retrieved = retriever(question)
+    hits = retrieved.hits
     retrieve_ms = (time.perf_counter() - started) * 1000
+    common = dict(model=model_name, retrieve_ms=retrieve_ms, queries=retrieved.queries,
+                  rewrite_ms=retrieved.rewrite_ms, rewrite_error=retrieved.rewrite_error)
 
     if not hits:                       # nothing to ground on: don't spend an LLM call
-        return RAGResult(question, NO_SOURCES_ANSWER, False, [], [], model=model_name,
-                         retrieve_ms=retrieve_ms)
+        return RAGResult(question, NO_SOURCES_ANSWER, False, [], [], input_tokens=retrieved.input_tokens,
+                         output_tokens=retrieved.output_tokens, **common)
 
     started = time.perf_counter()
     out = generator.invoke({"question": question, "context": format_context(hits)})
@@ -131,11 +144,10 @@ def answer_question(question: str, vectorstore, generator: Runnable, *, k: int =
         citations=citations,
         retrieved=hits,
         invalid_citations=invalid,
-        model=model_name,
-        retrieve_ms=retrieve_ms,
         generate_ms=generate_ms,
-        input_tokens=usage.get("input_tokens", 0),
-        output_tokens=usage.get("output_tokens", 0),
+        input_tokens=usage.get("input_tokens", 0) + retrieved.input_tokens,
+        output_tokens=usage.get("output_tokens", 0) + retrieved.output_tokens,
+        **common,
     )
 
 

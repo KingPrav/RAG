@@ -42,15 +42,21 @@ def section_of(chunk_id: str) -> str:
     return re.sub(r"/\d+$", "", chunk_id)
 
 
-def retrieval_scores(retrieved_chunk_ids: Sequence[str], gold_sections: Sequence[str], k: int) -> dict:
-    """hit@1, hit@k, recall@k and reciprocal rank for one question.
-    A question with several gold sections is a hit if *any* is retrieved
-    (any of them answers it); recall@k says what share of them were retrieved."""
+def retrieval_scores(retrieved_chunk_ids: Sequence[str], gold_sections: Sequence[str], k: int,
+                     context_chunk_ids: Sequence[str] | None = None) -> dict:
+    """hit@1, hit@k, recall@k and reciprocal rank for one question, over the
+    search ranking. A question with several gold sections is a hit if *any*
+    is retrieved (any of them answers it); recall@k says what share were.
+
+    context_hit: is a gold section anywhere in what the model was actually
+    shown (search hits + neighbor sections)? Equals hit@k without expansion."""
     sections = [section_of(c) for c in retrieved_chunk_ids[:k]]
     gold = set(gold_sections)
     ranks = [i for i, s in enumerate(sections, start=1) if s in gold]
     first = ranks[0] if ranks else None
+    context = sections if context_chunk_ids is None else [section_of(c) for c in context_chunk_ids]
     return {
+        "context_hit": any(s in gold for s in context),
         "hit@1": first == 1,
         f"hit@{k}": first is not None,
         f"recall@{k}": len(gold & set(sections)) / len(gold) if gold else 0.0,

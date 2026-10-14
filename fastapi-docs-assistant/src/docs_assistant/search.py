@@ -20,6 +20,9 @@ class Hit:
     rank: int
     similarity: float          # cosine similarity, 1.0 = same direction
     document: Document
+    # "search": found by vector search. "neighbor": added because it sits next
+    # to a search hit on the same page (Step 8a); it carries that hit's score.
+    source: str = "search"
 
     @property
     def chunk_id(self) -> str:

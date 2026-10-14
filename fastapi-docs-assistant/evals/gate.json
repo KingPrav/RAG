@@ -1,0 +1,13 @@
+{
+  "_comment": "Policy for python -m docs_assistant.gate. Change the baseline only in a reviewed commit that includes the new run.",
+  "baseline_run": "evals/runs/20261014T023450Z_rw-n1",
+  "floors": {
+    "max_errors": 0,
+    "max_invalid_citation_rate": 0.0,
+    "min_correct_refusal_rate": 1.0,
+    "min_overall_pass_rate": 0.75
+  },
+  "regression": {
+    "metrics": ["pass", "gold_in_context"]
+  }
+}
