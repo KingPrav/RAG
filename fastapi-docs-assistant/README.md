@@ -5,6 +5,18 @@ an accurate answer with citations to the exact docs section. Built as a
 production-style RAG system with retrieval instrumentation and an automated
 eval harness, so every quality claim is backed by a number.
 
+**At a glance** (provisional until the golden set is human-reviewed; full table in [Results](#results)):
+
+| | Baseline (dev) | Shipped (dev) | Shipped (held-out test) |
+|---|---|---|---|
+| Overall pass rate | 82.9% | **90.2%** | **87.2%** |
+| Paraphrased questions passed | 5/10 | **8/10** | 6/10 |
+| Right section in the model's context | 77.1% | **94.3%** | 91.4% |
+| Invalid citations | 0% | 0% | 0% |
+| Cost / p50 latency per question | $0.0005 / 2.8 s | $0.0010 / 4.5 s | $0.0010 / 4.5 s |
+
+Pipeline: FastAPI docs (pinned commit) → custom loader and code-safe chunker → `text-embedding-3-small` + Chroma → LLM query rewrite + rank fusion + neighbor-section expansion → grounded answer with checked citations → JSONL traces. An 80-question golden set, LLM-as-judge harness and CI gate measure every change.
+
 ## Architecture
 
 Built on **LangChain** interfaces, with custom components where the built-ins
@@ -15,13 +27,34 @@ don't fit this corpus:
 | Load | `FastAPIDocsLoader` (custom: resolves code includes, keeps section anchors) | `BaseLoader` → `Document` |
 | Chunk | `SectionChunker` (custom: code-safe, token-bounded) | `BaseDocumentTransformer` |
 | Embed + store | `text-embedding-3-small` → Chroma (cosine), incremental via `index()` + `SQLRecordManager` | `OpenAIEmbeddings`, `Chroma`, indexing API |
-| Retrieve | `retrieve()` → top-k chunks with cosine similarity | `VectorStore` |
-| Generate | Baseline two-step chain: retrieve → numbered sources → structured answer → citation check | `ChatPromptTemplate` \| `ChatOpenAI.with_structured_output` |
+| Retrieve | `Retriever` (Step 8): LLM rewrites the question into docs vocabulary → vector search for original + rewrites → reciprocal rank fusion → top-k → adjacent sections added (±1) | `VectorStore`, `ChatPromptTemplate` \| `with_structured_output` |
+| Generate | Retrieve → numbered sources → structured answer → citation check | `ChatPromptTemplate` \| `ChatOpenAI.with_structured_output` |
+| Trace | One JSON line per question: queries, chunks, scores, sources, usage signals, latency, cost | internal schema (v2) |
+| Evaluate | Golden set → exact match / LLM judge / refusal check → bootstrap CIs → CI gate | `init_chat_model` (pluggable judge) |
 
 Why custom loader and chunker: no built-in loader resolves FastAPI's `{* ... *}` code
 includes, and `MarkdownHeaderTextSplitter` strips indentation inside code blocks
 (`    return item` → `return item`), corrupting the Python examples. A regression test
 (`test_langchain_markdown_splitter_breaks_code`) documents this.
+
+<details>
+<summary>Module map (<code>src/docs_assistant/</code>)</summary>
+
+| Module | Role |
+|---|---|
+| `config.py` | Every setting and price in one place |
+| `fetch.py`, `markdown_clean.py`, `loader.py`, `ingest.py` | Step 1: download the docs at a pinned commit and turn them into clean `Document`s |
+| `tokens.py`, `chunk.py` | Step 2a: section-aware, token-bounded chunking |
+| `vectorstore.py`, `index.py`, `search.py` | Step 2b: embeddings, Chroma, incremental indexing, plain search |
+| `retrieval.py` | Step 8: query rewriting, rank fusion, neighbor expansion |
+| `rag.py`, `ask.py` | Step 3: the answer chain and the CLI |
+| `tracing.py`, `usage.py`, `report.py`, `run_queries.py`, `review.py` | Step 4–5: traces, "did the answer use the chunks?" signals, reports |
+| `golden.py` | Step 6: golden-set schema and validator |
+| `eval_metrics.py`, `judge.py`, `evaluate.py`, `compare.py`, `calibrate.py` | Step 7: scoring, LLM judge, eval runs, paired comparison, judge calibration |
+| `retrieval_eval.py` | Step 8: cheap retrieval-only sweep |
+| `gate.py`, `results.py` | Step 9: CI gate and the generated results table |
+
+</details>
 
 ## Setup
 
@@ -30,7 +63,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[dev]"
 cp .env.example .env
-python -m pytest -q
+python -m pytest -q          # 122 offline tests: no API key, stand-in models
 ```
 
 ## Step 1: build the corpus
@@ -153,7 +186,7 @@ Every question writes one JSON line to `data/logs/traces.jsonl`:
 
 | Section | Fields |
 |---|---|
-| `retrieval` | k, latency, and per result: rank, chunk ID, doc ID, cosine similarity, tokens |
+| `retrieval` | k, settings, **queries searched** (original + rewrites), rewrite latency/errors, latency, and per result: rank, chunk ID, doc ID, cosine similarity, tokens, **source** (`search` or `neighbor`) |
 | `generation` | model, **prompt version** (hash of the system prompt), latency, input/output/context tokens, cost, answer, citations, invalid citations, answerable |
 | `usage` | did the answer actually use the chunks? (below) |
 | `corpus` | docs commit, collection, embedding model, chunk size |
@@ -161,7 +194,7 @@ Every question writes one JSON line to `data/logs/traces.jsonl`:
 - **Retrieval and generation are logged separately**, each with its own latency, so a bad or
   slow answer can be attributed to search or to the model.
 - **IDs and scores, not chunk text**: enough to replay a query against the index, and small.
-- **Own schema, versioned.** OpenTelemetry's GenAI semantic conventions are still in
+- **Own schema, versioned** (v2 since Step 8 added queries and per-chunk source). OpenTelemetry's GenAI semantic conventions are still in
   *Development* status, so traces use an internal schema (`schema_version`) that can be mapped
   to OTel at export time. LangSmith tracing can be enabled separately via environment variables.
 
@@ -310,6 +343,34 @@ python -m docs_assistant.compare evals/runs/<baseline> evals/runs/<n1>   # paire
 
 A change ships only if `compare` shows the gain is real on dev. Then its setting becomes the default in `config.py`, its run becomes the gate baseline, and the sealed test split is run once for the headline number.
 
+### What the measurements showed (dev, 41 items)
+
+Retrieval-only sweep (`retrieval_eval`, about $0.01):
+
+| Strategy | hit@1 | Gold in context | Paraphrased gold in context | Context tokens p50 |
+|---|---|---|---|---|
+| baseline | 51.4% | 77.1% | 50% | 1,088 |
+| neighbors ±1 | 51.4% | 85.7% | 60% | 2,427 |
+| neighbors ±2 | 51.4% | 91.4% | 70% | 3,282 |
+| rewrite | 62.9% | 80.0% | 70% | 1,239 |
+| **rewrite + neighbors ±1** | **62.9%** | **94.3%** | **80%** | 2,246 |
+
+- **Rewriting alone is not enough.** It improves ranking (hit@1 +11 points) and rescues 4 misses, but loses 3 sections that plain search had found (the original query's results get diluted in fusion). Combined with neighbor expansion it comes out ahead on everything.
+- **Neighbors ±2 is the cheaper-latency alternative** (91.4%, no extra LLM call) at about 45% more context tokens. Not shipped: it doesn't fix the true vocabulary gaps.
+
+Full evals compared item by item against the baseline (`compare`):
+
+| Change | Pass rate | Gold in context | Fixed | Broken |
+|---|---|---|---|---|
+| neighbors ±1 | +0.0 pts | +8.6 pts | 2 | 2 |
+| **rewrite + neighbors ±1 (shipped)** | **+7.3 pts** (CI −7 to +22) | **+17.1 pts, significant** | 6 | 3 |
+
+- **Shipped:** rewrite + neighbors ±1, now the default.
+- **Getting the right section in front of the model** improved significantly.
+- **The pass-rate gain is not yet significant** at 41 items; a larger golden set is needed to prove it.
+- **All 3 regressions had the right section in context.** The model wrote incomplete answers instead (dropped a vital fact, or produced a mismatched URL in example code). That is a generation problem, and the prompt's "Be concise" rule is the next thing to test.
+- **Trade-off:** cost per question doubles ($0.0005 → $0.0010) and p50 latency rises about 1.6 s, almost all from the rewrite call.
+
 ## Step 9: CI eval gate + results table
 
 `.github/workflows/fastapi-docs-assistant.yml` (at the repo root) has two jobs:
@@ -322,15 +383,17 @@ A change ships only if `compare` shows the gain is real on dev. Then its setting
 The gate (`evals/gate.json`) blocks a merge on any of three kinds of check:
 
 1. **Infrastructure:** errored items, or baseline items that were never evaluated. Missing results are failures, never silently dropped.
-2. **Hard floors:** any invalid citation, any unanswerable trap that was answered, or an overall pass rate below 70%.
-3. **Regression:** a **statistically significant** drop against the committed baseline, on the same items (paired bootstrap on pass/fail and gold-in-context).
+2. **Hard floors:** any invalid citation, any unanswerable trap that was answered, or an overall pass rate below 75%.
+3. **Regression:** a **statistically significant** drop against the committed baseline (currently the shipped `rw-n1` dev run), on the same items (paired bootstrap on pass/fail and gold-in-context).
+
+When an improvement ships, its dev run replaces `baseline_run` in `evals/gate.json` in the same reviewed commit.
 
 **Why "significant drop" and not a fixed margin?** With about 40 dev items, ordinary run-to-run noise (a few answers flipping each way) gives a confidence interval roughly ±12 points wide. A tight margin would block good changes constantly. The gate catches real regressions (several items broken, few fixed) without crying wolf; a test proves both cases.
 
 The results table below is generated, not typed:
 
 ```bash
-python -m docs_assistant.results evals/runs/<baseline> evals/runs/<n1> evals/runs/<final> --write-readme
+python -m docs_assistant.results evals/runs/*_baseline evals/runs/*_n1 evals/runs/*_rw-n1 evals/runs/*_final --write-readme
 ```
 
 ## Results
@@ -348,6 +411,19 @@ python -m docs_assistant.results evals/runs/<baseline> evals/runs/<n1> evals/run
 _39 golden items in the last run are unreviewed drafts; numbers are provisional._
 <!-- results:end -->
 
+**Reading the test row.** The test split was never used for tuning; it ran once, with the shipped settings.
+- **Pass rate:** 87.2% on test against 90.2% on dev. That is within each other's confidence intervals, which is the expected small drop on unseen questions.
+- **Paraphrased questions:** the gain is smaller on unseen ones (6/10 against 8/10 on dev), and test false refusals are 8.6% against 0% on dev. Paraphrase handling is still the main weak spot.
+- **No baseline run on test yet**, so the test split shows the shipped system's level, not its improvement. Running the baseline settings on test (`--neighbors 0 --no-rewrite`) would give a paired before/after on unseen questions.
+
+## Known limitations
+
+- **Golden set not yet human-reviewed.** All items are drafts, so every number above is provisional. Review happens in `evals/golden_v1_review.csv`.
+- **Judge not yet calibrated.** Its agreement with human labels (TPR/TNR via `calibrate`) is unmeasured.
+- **Small eval set** (about 40 items per split). Confidence intervals are about ±10 points, so only large effects reach significance.
+- **Generation completeness.** Some answers drop a vital fact even when the right section was retrieved.
+- **Latency.** Query rewriting adds about 1.6 s at p50. A faster rewrite model, or neighbors ±2 without rewriting, are the options.
+
 ## Roadmap
 
 1. Corpus ingestion ✅
@@ -359,3 +435,10 @@ _39 golden items in the last run are unreviewed drafts; numbers are provisional.
 7. Eval harness: exact match for factual answers, LLM-as-judge for open-ended ones ✅
 8. Improvements, measured against the baseline ✅ (shipped: rewrite + neighbors ±1)
 9. CI eval gate + results table ✅
+
+Next:
+- Human review of the golden set.
+- Judge calibration.
+- Baseline run on the test split.
+- Test the prompt's "Be concise" rule against answer completeness.
+- Grow the golden set so smaller effects can be proven.
