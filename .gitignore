@@ -1,0 +1,12 @@
+# This repository holds only the FastAPI Docs Assistant.
+# Allow-list: ignore everything at the top level except the project, CI and these files,
+# so other local folders (tutorial notebooks, side projects) can't be committed by accident.
+/*
+!/fastapi-docs-assistant/
+!/.github/
+!/README.md
+!/.gitignore
+
+# OS / editor noise anywhere
+.DS_Store
+.ipynb_checkpoints/
