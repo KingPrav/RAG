@@ -477,6 +477,10 @@ if __name__ == "__main__":
     here = Path(__file__).parent
     rows = build()
     apply_reviews(rows, here / "golden_v1_review.csv")
+    # Human-approved Ragas questions (python -m docs_assistant.ragas_testset merge)
+    ragas = here / "golden_ragas.jsonl"
+    if ragas.exists():
+        rows += [json.loads(line) for line in ragas.read_text().splitlines() if line.strip()]
     (here / "golden_v1.jsonl").write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows))
     reviewed = sum(r["review"]["status"] != "draft" for r in rows)
     print(f"Wrote {len(rows)} items to {here / 'golden_v1.jsonl'} ({reviewed} reviewed)")

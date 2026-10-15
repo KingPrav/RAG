@@ -1,0 +1,37 @@
+{
+  "model": "gpt-6.1-sol",
+  "calls": 223,
+  "input_tokens": 302257,
+  "output_tokens": 38516,
+  "cost_usd": 2.6668,
+  "seconds": 247.7,
+  "summary": {
+    "faithfulness": {
+      "value": 0.9930555555555556,
+      "ci95": [
+        0.9791666666666666,
+        1.0
+      ],
+      "n": 32,
+      "errors": 0
+    },
+    "context_recall": {
+      "value": 0.8476190476190476,
+      "ci95": [
+        0.7333333333333334,
+        0.9428571428571428
+      ],
+      "n": 35,
+      "errors": 0
+    },
+    "factual_correctness": {
+      "value": 0.416875,
+      "ci95": [
+        0.2609375,
+        0.573125
+      ],
+      "n": 32,
+      "errors": 0
+    }
+  }
+}

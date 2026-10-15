@@ -27,7 +27,9 @@ from . import config
 
 GOLDEN_PATH = config.ROOT / "evals" / "golden_v1.jsonl"
 CATEGORIES = ("vocab-mismatch", "ranking", "exact-fact", "exact-term", "code", "multi-section",
-              "unanswerable-oos", "unanswerable-trap")
+              "unanswerable-oos", "unanswerable-trap",
+              # Ragas-generated, human-approved (docs_assistant.ragas_testset)
+              "synthetic-single", "synthetic-multi")
 ID_PATTERN = re.compile(r"^[a-z]+-\d{3}$")
 
 

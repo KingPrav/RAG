@@ -53,6 +53,7 @@ includes, and `MarkdownHeaderTextSplitter` strips indentation inside code blocks
 | `eval_metrics.py`, `judge.py`, `evaluate.py`, `compare.py`, `calibrate.py` | Step 7: scoring, LLM judge, eval runs, paired comparison, judge calibration |
 | `retrieval_eval.py` | Step 8: cheap retrieval-only sweep |
 | `gate.py`, `results.py` | Step 9: CI gate and the generated results table |
+| `ragas_eval.py`, `ragas_testset.py` | Ragas metrics on saved runs; Ragas-generated golden candidates |
 
 </details>
 
@@ -63,7 +64,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[dev]"
 cp .env.example .env
-python -m pytest -q          # 122 offline tests: no API key, stand-in models
+python -m pytest -q          # 134 offline tests: no API key, stand-in models
 ```
 
 ## Step 1: build the corpus
@@ -267,7 +268,7 @@ category. The validator itself is tested against 13 kinds of bad items.
 
 **Review:** items are written as drafts and approved by a human in
 [`evals/golden_v1_review.csv`](evals/golden_v1_review.csv) (decision: approve / reject / edit),
-merged back by the build script. Gold-section lists may be incomplete where several sections
+merged back by the build script. Items marked rejected stay in the file for the record but are skipped by every eval command. Gold-section lists may be incomplete where several sections
 answer a question; review should add any missing ones.
 
 ## Step 7: eval harness
@@ -377,7 +378,7 @@ Full evals compared item by item against the baseline (`compare`):
 
 | Job | When | What |
 |---|---|---|
-| `tests` | Every push / PR touching the project | 120+ offline tests. No API key, free |
+| `tests` | Every push / PR touching the project | 130+ offline tests. No API key, free |
 | `eval-gate` | PRs from this repo, manual runs | Rebuild the index (cached; re-runs embed nothing), run the dev eval with the real models (~$0.20), then `python -m docs_assistant.gate`. The report lands on the run's summary page and the run folder is uploaded as an artifact |
 
 The gate (`evals/gate.json`) blocks a merge on any of three kinds of check:
@@ -395,6 +396,44 @@ The results table below is generated, not typed:
 ```bash
 python -m docs_assistant.results evals/runs/*_baseline evals/runs/*_n1 evals/runs/*_rw-n1 evals/runs/*_final --write-readme
 ```
+
+## Ragas: second-opinion metrics and generated questions
+
+[Ragas](https://docs.ragas.io) is the field's standard RAG-evaluation library. It's used here in two ways, alongside the project's own judge rather than instead of it.
+
+```bash
+python -m pip install -e ".[ragas]"
+python -m docs_assistant.ragas_eval evals/runs/*_baseline evals/runs/*_rw-n1      # metrics on saved runs
+python -m docs_assistant.ragas_testset generate --size 30                          # candidate questions
+python -m docs_assistant.ragas_testset merge                                       # after review
+```
+
+**1. Metrics on saved runs** (`ragas_eval.py`). Nothing is re-answered: each run's saved answers are scored against exactly what the model was shown, rebuilt from the logged chunk IDs with neighbors included.
+
+| Metric | Question | Scored on |
+|---|---|---|
+| Faithfulness | Is every claim in the answer supported by the retrieved text? | Answered items |
+| Context recall | Does the retrieved text cover the reference answer? | Answerable items |
+| Factual correctness (recall mode) | Does the answer contain the reference's claims? | Answered, answerable items |
+
+- **Recall mode for factual correctness:** our reference answers are short, so F1 would penalize correct extra detail.
+- **Judge:** the eval judge (`RAGAS_MODEL`), never the answering model.
+- **Cost:** printed as an estimate before running. Real token usage is metered and saved as `ragas_meta.json` in the run folder.
+- **Caching and failures:** scores are cached in `ragas.jsonl`. Failed or NaN scores are counted, never dropped.
+- **Comparisons:** paired against the first run, with bootstrap CIs.
+
+**2. Question generation** (`ragas_testset.py`) to grow the golden set:
+1. A stratified sample of real chunks (300 across all pages) becomes a Ragas knowledge graph. The cheap model extracts summaries, entities and themes and links related sections.
+2. The strong model writes single- and multi-section questions **in the voice of custom personas aimed at the known weak spot:** a Flask migrant using Flask terms, a junior developer who describes goals in everyday words, and a detail hunter. Default Ragas questions echo the docs' wording, which would miss the paraphrases that broke retrieval in Step 5.
+3. Each question is converted to the golden schema:
+   - gold sections are mapped back from the chunks it was written from;
+   - evidence is a sentence copied verbatim from that chunk;
+   - nuggets come from a small LLM call.
+
+   Only items that pass `golden validate` are offered for review.
+4. Nothing enters the golden set until it's approved in `evals/golden_ragas_review.csv`. `merge` writes approved items (with any in-sheet edits) to `evals/golden_ragas.jsonl`, rebalancing dev/test. `build_golden_v1.py` appends them as the categories `synthetic-single` / `synthetic-multi` (`source: ragas:*`), so they can be reported separately from hand-written items.
+
+**Compatibility note:** a plain `pip install ragas` quietly breaks this project. It resolves an old `instructor` that downgrades `langchain-openai` and the `openai` SDK, and Ragas 0.4.3 imports a module that `langchain-community` 0.4.2 removed. The `[ragas]` extra pins around both. Ragas also guesses API parameters from model names and misses `gpt-6.1-sol`, so every call goes through a client wrapper that normalizes parameters for reasoning models and meters tokens.
 
 ## Results
 
@@ -441,4 +480,5 @@ Next:
 - Judge calibration.
 - Baseline run on the test split.
 - Test the prompt's "Be concise" rule against answer completeness.
-- Grow the golden set so smaller effects can be proven.
+- Grow the golden set to 100+ with reviewed Ragas questions, so smaller effects can be proven.
+- Ragas faithfulness on baseline vs shipped runs.

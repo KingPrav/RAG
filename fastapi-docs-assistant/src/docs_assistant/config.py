@@ -102,6 +102,16 @@ JUDGE_MODEL = os.getenv("JUDGE_MODEL", "openai:gpt-6.1-sol")
 JUDGE_USD_PER_1M_INPUT = float(os.getenv("JUDGE_USD_PER_1M_INPUT", "5.00"))
 JUDGE_USD_PER_1M_OUTPUT = float(os.getenv("JUDGE_USD_PER_1M_OUTPUT", "30.00"))
 EVAL_RUNS_DIR = ROOT / "evals" / "runs"
+
+# Ragas (third-party metrics + question generation). The metric judge defaults
+# to the eval judge, so it is never the model that wrote the answers.
+RAGAS_MODEL = os.getenv("RAGAS_MODEL", JUDGE_MODEL.split(":", 1)[-1])
+RAGAS_USD_PER_1M_INPUT = float(os.getenv("RAGAS_USD_PER_1M_INPUT", str(JUDGE_USD_PER_1M_INPUT)))
+RAGAS_USD_PER_1M_OUTPUT = float(os.getenv("RAGAS_USD_PER_1M_OUTPUT", str(JUDGE_USD_PER_1M_OUTPUT)))
+# Question generation: a cheap model builds the knowledge graph (many small
+# calls), a strong one writes the questions (few calls).
+RAGAS_KG_MODEL = os.getenv("RAGAS_KG_MODEL", CHAT_MODEL)
+RAGAS_QUESTION_MODEL = os.getenv("RAGAS_QUESTION_MODEL", RAGAS_MODEL)
 EVAL_WORKERS = int(os.getenv("EVAL_WORKERS", "4"))      # questions answered in parallel
 BOOTSTRAP_RESAMPLES = 5000
 

@@ -25,6 +25,16 @@ dev = [
     # MarkdownHeaderTextSplitter isn't used.
     "langchain-text-splitters>=1.0",
 ]
+# Third-party RAG metrics and question generation (docs_assistant.ragas_eval / ragas_testset).
+# The pins matter: without them pip resolves an old `instructor` that downgrades
+# langchain-openai and the openai SDK, and langchain-community 0.4.2 removed a
+# module Ragas 0.4.3 imports.
+ragas = [
+    "ragas==0.4.3",
+    "instructor>=1.11",
+    "langchain-community==0.4.1",
+    "langchain-openai>=1.6.7",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

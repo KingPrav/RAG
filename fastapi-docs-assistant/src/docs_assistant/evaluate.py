@@ -316,7 +316,10 @@ def load_golden(path: Path) -> tuple[list[GoldenItem], str | None]:
     items, errors = validate(load_items(path), sections, commit)
     if errors:
         raise SystemExit(f"Golden set is invalid ({len(errors)} problems). Run: python -m docs_assistant.golden validate")
-    return items, commit
+    rejected = [i for i in items if i.review.status == "rejected"]
+    if rejected:
+        print(f"Skipping {len(rejected)} golden item(s) rejected in review.")
+    return [i for i in items if i.review.status != "rejected"], commit
 
 
 def main():
