@@ -46,8 +46,11 @@ def score_item(item: GoldenItem, result, judge, k: int) -> dict:
         "answer": result.answer, "answerable_predicted": result.answerable,
         "citations": cited, "invalid_citations": result.invalid_citations,
         "retrieved": [{"rank": h.rank, "chunk_id": h.chunk_id, "similarity": round(h.similarity, 4),
-                       "source": h.source} for h in hits],
+                       "source": h.source,
+                       "rerank_score": None if h.rerank_score is None else round(h.rerank_score, 4)} for h in hits],
         "queries": result.queries, "rewrite_error": result.rewrite_error,
+        "rewrite_ms": round(result.rewrite_ms, 1), "rerank_ms": round(result.rerank_ms, 1),
+        "rerank_error": result.rerank_error,
         "context_tokens": sum(h.document.metadata.get("n_tokens", 0) for h in hits),
         "retrieve_ms": round(result.retrieve_ms, 1), "generate_ms": round(result.generate_ms, 1),
         "input_tokens": result.input_tokens, "output_tokens": result.output_tokens,
@@ -94,10 +97,11 @@ def error_row(item: GoldenItem, error: Exception) -> dict:
 # ---------------------------------------------------------------- running
 
 def run_items(items: list[GoldenItem], vectorstore, generator, judge, *, k: int, workers: int = 1,
-              progress=print, retriever=None) -> list[dict]:
+              progress=print, retriever=None, prompt: str = config.ANSWER_PROMPT) -> list[dict]:
     def one(item: GoldenItem) -> dict:
         try:
-            result = answer_question(item.question, vectorstore, generator, k=k, retriever=retriever)
+            result = answer_question(item.question, vectorstore, generator, k=k, retriever=retriever,
+                                     prompt=prompt)
             return score_item(item, result, judge, k)
         except Exception as e:                 # one failing question must not sink the run
             return error_row(item, e)
@@ -168,6 +172,7 @@ def summarize(rows: list[dict], k: int, resamples: int = config.BOOTSTRAP_RESAMP
             "context_recall": R(answerable, lambda r: r["retrieval"].get("context_hit", r["retrieval"][f"hit@{k}"])),
             "context_tokens_p50": percentile([r.get("context_tokens") for r in ok], .5),
             "rewrite_errors": sum(1 for r in ok if r.get("rewrite_error")),
+            "rerank_errors": sum(1 for r in ok if r.get("rerank_error")),
         },
         "grounding": {
             "invalid_citation_rate": R(ok, lambda r: bool(r["invalid_citations"])),
@@ -176,6 +181,10 @@ def summarize(rows: list[dict], k: int, resamples: int = config.BOOTSTRAP_RESAMP
             "judge_verdicts_overridden": sum(1 for r in ok if r.get("judge") and r["judge"]["verdict_overridden"]),
         },
         "latency_ms": {
+            "total_p50": percentile([r["retrieve_ms"] + r["generate_ms"] for r in ok], .5),
+            "total_p95": percentile([r["retrieve_ms"] + r["generate_ms"] for r in ok], .95),
+            "rewrite_p50": percentile([r.get("rewrite_ms") for r in ok if r.get("rewrite_ms")], .5),
+            "rerank_p50": percentile([r.get("rerank_ms") for r in ok if r.get("rerank_ms")], .5),
             "retrieve_p50": percentile([r["retrieve_ms"] for r in ok], .5),
             "retrieve_p95": percentile([r["retrieve_ms"] for r in ok], .95),
             "generate_p50": percentile([r["generate_ms"] for r in ok], .5),
@@ -213,8 +222,16 @@ def fmt(metric: dict | float | None, pct: bool = True) -> str:
 def latency_lines(lat: dict) -> list[str]:
     if lat["retrieve_p50"] is None:
         return ["| Latency | n/a |"]
-    return [f"| Latency retrieve p50 / p95 | {lat['retrieve_p50']:.0f} / {lat['retrieve_p95']:.0f} ms |",
-            f"| Latency generate p50 / p95 | {lat['generate_p50']:.0f} / {lat['generate_p95']:.0f} ms |"]
+    lines = []
+    if lat.get("total_p50") is not None:
+        lines.append(f"| **Latency end-to-end p50 / p95** | **{lat['total_p50']:.0f} / {lat['total_p95']:.0f} ms** |")
+    lines += [f"| Latency retrieve p50 / p95 | {lat['retrieve_p50']:.0f} / {lat['retrieve_p95']:.0f} ms |",
+              f"| Latency generate p50 / p95 | {lat['generate_p50']:.0f} / {lat['generate_p95']:.0f} ms |"]
+    parts = [f"rewrite {lat['rewrite_p50']:.0f} ms" if lat.get("rewrite_p50") else "",
+             f"rerank {lat['rerank_p50']:.0f} ms" if lat.get("rerank_p50") else ""]
+    if any(parts):
+        lines.append(f"| Latency inside retrieval p50 | {' · '.join(p for p in parts if p)} |")
+    return lines
 
 
 def render_markdown(summary: dict, cfg: dict) -> str:
@@ -229,9 +246,13 @@ def render_markdown(summary: dict, cfg: dict) -> str:
         f"k={k} · prompt `{cfg['prompt_version']}` · judge prompt `{cfg['judge_prompt_version']}` · "
         f"golden `{cfg['golden_sha256'][:10]}` · docs `{(cfg['corpus_commit'] or '')[:10]}`",
         "",
-        f"Retrieval: neighbors ±{cfg.get('neighbors', 0)} · query rewrite {'on' if cfg.get('rewrite') else 'off'}"
+        f"Answer prompt {cfg.get('answer_prompt', 'v1')} · retrieval: neighbors ±{cfg.get('neighbors', 0)} · "
+        f"query rewrite {'on' if cfg.get('rewrite') else 'off'}"
+        + (f" (effort {cfg['rewrite_effort']})" if cfg.get("rewrite") and cfg.get("rewrite_effort") else "")
+        + (f" · rerank {cfg['rerank']} (top {cfg.get('rerank_candidates')})" if cfg.get("rerank", "none") != "none" else "")
         + (f" · context p50 {r['context_tokens_p50']} tokens" if r.get("context_tokens_p50") else "")
-        + (f" · {r['rewrite_errors']} rewrite errors (fell back to original query)" if r.get("rewrite_errors") else ""),
+        + (f" · {r['rewrite_errors']} rewrite errors (fell back to original query)" if r.get("rewrite_errors") else "")
+        + (f" · {r['rerank_errors']} rerank errors (kept search order)" if r.get("rerank_errors") else ""),
         "",
     ]
     if drafts:
@@ -275,12 +296,13 @@ def git_commit() -> str | None:
 
 
 def run_config(*, label: str, split: str, k: int, golden_path: Path, corpus_commit: str | None,
-               extra: dict | None = None) -> dict:
+               extra: dict | None = None, prompt: str = config.ANSWER_PROMPT) -> dict:
     return {
         "label": label, "split": split, "k": k,
         "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "chat_model": config.CHAT_MODEL, "judge_model": config.JUDGE_MODEL,
-        "prompt_version": prompt_version(), "judge_prompt_version": judge_prompt_version(),
+        "answer_prompt": prompt, "prompt_version": prompt_version(prompt),
+        "judge_prompt_version": judge_prompt_version(),
         "embedding_model": config.EMBEDDING_MODEL, "collection": config.COLLECTION_NAME,
         "chunk_max_tokens": config.CHUNK_MAX_TOKENS, "usage_version": USAGE_VERSION,
         "corpus_commit": corpus_commit, "golden_path": str(golden_path.relative_to(config.ROOT))
@@ -368,19 +390,19 @@ def main():
     estimate = len(items) * context * config.CHAT_USD_PER_1M_INPUT / 1e6 + n_open * (
         2000 * config.JUDGE_USD_PER_1M_INPUT + 400 * config.JUDGE_USD_PER_1M_OUTPUT) / 1e6
     print(f"Evaluating {len(items)} items ({args.split}) · answer {config.CHAT_MODEL} · judge {config.JUDGE_MODEL}"
-          f" · neighbors ±{settings.neighbors} · rewrite {'on' if settings.rewrite else 'off'}"
+          f" · prompt {args.prompt} · neighbors ±{settings.neighbors} · rewrite {'on' if settings.rewrite else 'off'}"
           f" · ~${estimate:.2f} estimated\n")
 
-    vectorstore, generator, retriever = load_pipeline(settings)
+    vectorstore, generator, retriever = load_pipeline(settings, args.prompt)
     started = time.perf_counter()
     try:
         rows = run_items(items, vectorstore, generator, judge, k=args.k, workers=args.workers,
-                         retriever=retriever)
+                         retriever=retriever, prompt=args.prompt)
     except Exception as e:
         explain_model_error(e)
         raise
     cfg = run_config(label=args.label, split=args.split, k=args.k, golden_path=args.golden,
-                     corpus_commit=corpus_commit,
+                     corpus_commit=corpus_commit, prompt=args.prompt,
                      extra={**settings.describe(), "wall_seconds": round(time.perf_counter() - started, 1)})
     run_dir = write_run(rows, cfg)
     errors = [r for r in rows if r.get("error")]

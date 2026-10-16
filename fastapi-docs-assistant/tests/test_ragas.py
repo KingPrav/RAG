@@ -22,6 +22,7 @@ CHUNKS = {
 }
 GOLDEN = {
     "vocab-007": {"answer_type": "open", "expected_answer": "Use the lifespan parameter with an async context manager."},
+    "fact-003": {"answer_type": "exact", "expected_answer": "/redoc"},
     "trap-001": {"answer_type": "abstain", "expected_answer": "Not in the docs."},
 }
 
@@ -42,6 +43,15 @@ def test_metrics_apply_only_where_they_make_sense():
     assert samples["vocab-007"]["retrieved_contexts"][1] == CHUNKS["advanced/events#lifespan"]
     refused = build_samples([row("vocab-007", answered=False)], GOLDEN, CHUNKS)[0]
     assert refused["metrics"] == ["context_recall"]        # a refusal has no claims to check
+
+
+def test_factual_correctness_skips_bare_value_references_and_cached_scores_are_filtered():
+    from docs_assistant.ragas_eval import drop_inapplicable
+    samples = build_samples([row("fact-003"), row("vocab-007")], GOLDEN, CHUNKS)
+    assert samples[0]["metrics"] == ["faithfulness", "context_recall"]      # exact item: no factual score
+    cached = [{"id": "fact-003", "faithfulness": 1.0, "context_recall": 1.0, "factual_correctness": 0.0,
+               "errors": {}}]
+    assert "factual_correctness" not in drop_inapplicable(cached, samples)[0]
 
 
 def test_missing_chunk_text_is_an_error_not_a_silent_skip():

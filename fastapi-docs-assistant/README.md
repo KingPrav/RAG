@@ -54,6 +54,8 @@ includes, and `MarkdownHeaderTextSplitter` strips indentation inside code blocks
 | `retrieval_eval.py` | Step 8: cheap retrieval-only sweep |
 | `gate.py`, `results.py` | Step 9: CI gate and the generated results table |
 | `ragas_eval.py`, `ragas_testset.py` | Ragas metrics on saved runs; Ragas-generated golden candidates |
+| `rerank.py` | Phase 1: cross-encoder and listwise-LLM rerankers |
+| `experiments.py` | One-command experiment rounds and the post-ship finalize run |
 
 </details>
 
@@ -64,7 +66,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[dev]"
 cp .env.example .env
-python -m pytest -q          # 134 offline tests: no API key, stand-in models
+python -m pytest -q          # 148 offline tests: no API key, stand-in models
 ```
 
 ## Step 1: build the corpus
@@ -395,6 +397,55 @@ The results table below is generated, not typed:
 
 ```bash
 python -m docs_assistant.results evals/runs/*_baseline evals/runs/*_n1 evals/runs/*_rw-n1 evals/runs/*_final --write-readme
+```
+
+## Phase 1: improving the under-the-hood metrics
+
+After Step 8 and Ragas, the remaining weak spots were:
+- **Answer completeness:** Ragas factual correctness 0.73, vital nugget recall 89%.
+- **Ranking:** hit@1 57%, MRR 0.67.
+- **Partial-answer refusals:** 8.6% on test.
+- **Latency:** 4.5 s p50, about half of it the rewrite call.
+
+Three experiments target these, each measured against the shipped `rw-n1` run with `compare` (and Ragas for the finalists). Each one ships only if it helps without regressing anything else.
+
+| Experiment | Change | Targets | Flag |
+|---|---|---|---|
+| Completeness prompt | Prompt **v2**: "answer completely, then concisely" (defaults, required parameters, caveats); answer the supported part of a partial question instead of refusing. v1 stays byte-identical (hash `df19b7bc93`) | Factual correctness, nugget recall, false refusals | `--prompt v2` |
+| Reranker | Retrieve 20 candidates (original + rewrites, fused), rerank, keep 5, then neighbors. **`ce`**: local cross-encoder (FlashRank `ms-marco-MiniLM-L-12-v2`, ONNX on CPU, no API cost). **`llm`**: one listwise call on the cheap model. Picked by the retrieval sweep | hit@1, MRR, context precision | `--rerank ce` / `llm` |
+| Latency | The rewrite call gets a low reasoning effort; the original question is searched **while** the rewrite is in flight; repeated questions reuse a cached rewrite | End-to-end and retrieval p50/p95 | `--rewrite-effort low` |
+
+Notes:
+- Rerankers fall back to the search order if they fail, so a reranker error never fails a question.
+- Each eval run now reports end-to-end p50/p95, plus rewrite and rerank time inside retrieval.
+- Traces (schema v3) record the prompt id, rerank scores and rewrite-cache hits.
+
+### Results (dev, 41 items, vs shipped `rw-n1`)
+
+| Run | Pass | Δ pass | hit@1 | Vital nuggets | Trick Qs refused | p50 latency | $/query |
+|---|---|---|---|---|---|---|---|
+| rw-n1 (previous) | 90.2% | n/a | 57.1% | 89.3% | 100% | 4.6 s | $0.0010 |
+| prompt v2 | 82.9% | −7.3 | 57.1% | 94.6% | **17%** | 6.1 s | $0.0011 |
+| prompt v3 | 92.7% | +2.4 | 57.1% | 91.1% | 100% | 4.7 s | $0.0010 |
+| **v3 + LLM reranker (shipped)** | **100%** | **+9.8, significant** | **80.0%** | **100%** | 100% | 6.5 s | $0.0021 |
+| v3 + LLM reranker, no rewrite | 97.6% | +7.3 | 77.1% | 100% | 100% | 4.4 s | $0.0019 |
+
+What each experiment showed:
+- **v2 failed on trick questions.** "Answer the supported part, keep answerable true" fixed incomplete answers, but made the model mark trick questions answerable whenever related text existed, even though its answer text admitted the gap.
+- **v3 fixed that** by defining answerable as "the sources contain the specific thing asked for."
+- **The LLM reranker is the decisive change:**
+  - hit@1 +23 points, every vital nugget covered, nothing broken.
+  - In the retrieval sweep, the **cross-encoder did not help** (hit@1 54%, about 2.4 s on CPU; it was trained on web search queries, not developer docs).
+  - **Low reasoning effort did not speed up the rewrite** (2.08 → 2.04 s).
+- **Trade-off:** shipped for quality, at about +1.9 s and twice the cost per question. The no-rewrite variant is the faster alternative (4.4 s, below the previous 4.6 s) at −2.4 points.
+- **Caveat:** dev items guided the v3 prompt, so 100% on dev is optimistic. The sealed test split gives the honest number.
+
+```bash
+python -m docs_assistant.experiments              # run a round of full evals and compare with the baseline
+python -m docs_assistant.experiments --finalize   # test split with shipped settings + Ragas + README table
+python -m docs_assistant.retrieval_eval --split dev       # baseline, rw+n1, +ce, +llm, fast rewrite (+ce)
+python -m docs_assistant.evaluate --split dev --label v2 --prompt v2
+python -m docs_assistant.compare evals/runs/*_rw-n1 evals/runs/*_v2
 ```
 
 ## Ragas: second-opinion metrics and generated questions

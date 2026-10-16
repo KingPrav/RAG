@@ -83,7 +83,21 @@ FUSION_DEPTH = 10              # results per query fed into rank fusion
 RRF_K = 60                     # reciprocal rank fusion constant (Cormack et al., 2009)
 CONTEXT_MAX_TOKENS = 6000      # cap on what neighbor expansion may add
 
+# Phase 1 experiments (off until an eval shows they help):
+#   rerank: "none", "ce" (local cross-encoder) or "llm" (listwise, cheap model)
+#   rewrite effort: reasoning effort for the rewrite call ("low" etc.); None = model default
+RERANK = os.getenv("RERANK", "llm")             # shipped after Phase 1: hit@1 57% -> 80% on dev
+RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "20"))
+RERANK_CE_MODEL = os.getenv("RERANK_CE_MODEL", "ms-marco-MiniLM-L-12-v2")
+RERANK_REASONING_EFFORT = os.getenv("RERANK_REASONING_EFFORT", "low") or None
+REWRITE_REASONING_EFFORT = os.getenv("REWRITE_REASONING_EFFORT") or None
+MODELS_DIR = DATA_DIR / "models"                 # downloaded reranker weights (gitignored)
+REWRITE_CACHE_SIZE = 1024
+
 # ---- Step 3: generation
+# Answer prompt version (see rag.PROMPTS). v1 = the Step 3 prompt.
+# v3 shipped after Phase 1 (dev pass 90.2% -> 100% together with the LLM reranker).
+ANSWER_PROMPT = os.getenv("ANSWER_PROMPT", "v3")
 # OpenAI's pages disagree on the exact identifier of the cheapest current tier
 # ("Luna"), so the model is configurable. Override with CHAT_MODEL in .env.
 # List the models your key can use:

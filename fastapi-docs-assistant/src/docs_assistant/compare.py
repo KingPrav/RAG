@@ -14,14 +14,18 @@ from .evaluate import load_run
 
 CONFIG_KEYS = ("chat_model", "judge_model", "prompt_version", "judge_prompt_version", "k", "collection",
                "embedding_model", "chunk_max_tokens", "corpus_commit", "golden_sha256", "split",
-               "neighbors", "rewrite", "n_rewrites")
-# Runs made before Step 8 don't record these; they ran with the features off.
-CONFIG_DEFAULTS = {"neighbors": 0, "rewrite": False, "n_rewrites": None}
+               "neighbors", "rewrite", "n_rewrites", "answer_prompt", "rerank", "rerank_candidates",
+               "rewrite_effort")
+# Runs made before these settings existed ran with them off / at v1.
+CONFIG_DEFAULTS = {"neighbors": 0, "rewrite": False, "n_rewrites": None, "answer_prompt": "v1", "rerank": "none",
+                   "rerank_candidates": None, "rewrite_effort": None}
 
 
 def setting(cfg: dict, key: str):
-    if key == "n_rewrites" and not cfg.get("rewrite"):
+    if key in ("n_rewrites", "rewrite_effort") and not cfg.get("rewrite"):
         return None                            # irrelevant when rewriting is off
+    if key == "rerank_candidates" and cfg.get("rerank", "none") == "none":
+        return None
     return cfg.get(key, CONFIG_DEFAULTS.get(key))
 
 

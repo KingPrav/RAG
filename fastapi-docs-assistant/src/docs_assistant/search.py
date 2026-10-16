@@ -23,6 +23,7 @@ class Hit:
     # "search": found by vector search. "neighbor": added because it sits next
     # to a search hit on the same page (Step 8a); it carries that hit's score.
     source: str = "search"
+    rerank_score: float | None = None          # set when a reranker ordered the hits (Phase 1)
 
     @property
     def chunk_id(self) -> str:

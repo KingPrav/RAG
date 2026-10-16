@@ -20,16 +20,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config
-from .rag import SYSTEM_PROMPT, RAGResult
+from .rag import RAGResult, prompt_hash
 from .usage import analyze_usage
 
-SCHEMA_VERSION = 2          # 2: retrieval settings, searched queries, per-chunk source
+SCHEMA_VERSION = 3          # 2: settings, queries, per-chunk source; 3: prompt id, rerank, rewrite cache
 TRACES_PATH = config.DATA_DIR / "logs" / "traces.jsonl"
 
 
-def prompt_version() -> str:
+def prompt_version(prompt: str = config.ANSWER_PROMPT) -> str:
     """Short hash of the system prompt, so every trace says which prompt made it."""
-    return hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest()[:10]
+    return prompt_hash(prompt)
 
 
 def build_trace(result: RAGResult, k: int, settings: dict | None = None) -> dict:
@@ -53,17 +53,21 @@ def build_trace(result: RAGResult, k: int, settings: dict | None = None) -> dict
             "queries": result.queries,
             "rewrite_ms": round(result.rewrite_ms, 1),
             "rewrite_error": result.rewrite_error,
+            "rewrite_cached": result.rewrite_cached,
+            "rerank_ms": round(result.rerank_ms, 1),
+            "rerank_error": result.rerank_error,
             "latency_ms": round(result.retrieve_ms, 1),
             "results": [
                 {"rank": h.rank, "chunk_id": h.chunk_id, "doc_id": h.document.metadata.get("doc_id"),
                  "similarity": round(h.similarity, 4), "n_tokens": h.document.metadata.get("n_tokens"),
-                 "source": h.source}
+                 "source": h.source, "rerank_score": None if h.rerank_score is None else round(h.rerank_score, 4)}
                 for h in hits
             ],
         },
         "generation": {
             "model": result.model,
-            "prompt_version": prompt_version(),
+            "prompt_version": prompt_version(result.prompt),
+            "prompt": result.prompt,
             "latency_ms": round(result.generate_ms, 1),
             "input_tokens": result.input_tokens,
             "output_tokens": result.output_tokens,

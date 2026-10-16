@@ -16,7 +16,10 @@ Fusion is implemented here (a few lines) rather than with LangChain's
 EnsembleRetriever / MultiQueryRetriever because those drop the similarity
 scores that the Step 4 instrumentation logs for every chunk.
 """
+import threading
 import time
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 
 from langchain_core.documents import Document
@@ -38,9 +41,17 @@ class RetrievalSettings:
     n_rewrites: int = config.N_REWRITES
     fusion_depth: int = config.FUSION_DEPTH
     context_max_tokens: int = config.CONTEXT_MAX_TOKENS
+    rerank: str = "none"                              # "none", "ce" or "llm" (shipped value: config.RERANK)
+    rerank_candidates: int = config.RERANK_CANDIDATES
+    rewrite_effort: str | None = config.REWRITE_REASONING_EFFORT
 
     def describe(self) -> dict:
         return asdict(self)
+
+    @classmethod
+    def shipped(cls) -> "RetrievalSettings":
+        """The configured production settings (config / .env)."""
+        return cls(rerank=config.RERANK)
 
 
 @dataclass
@@ -49,9 +60,12 @@ class Retrieved:
     queries: list[str]                 # original first, then rewrites
     rewrite_ms: float = 0.0
     search_ms: float = 0.0
-    input_tokens: int = 0              # rewrite call usage (same model as answering)
+    input_tokens: int = 0              # rewrite + LLM-rerank usage (same model as answering)
     output_tokens: int = 0
     rewrite_error: str | None = None
+    rerank_ms: float = 0.0
+    rerank_error: str | None = None
+    rewrite_cached: bool = False
 
     @property
     def search_hits(self) -> list[Hit]:
@@ -175,18 +189,48 @@ def expand_with_neighbors(hits: list[Hit], neighbors: ChunkNeighbors, window: in
 
 # ---------------------------------------------------------------- the retriever
 
+class RewriteCache:
+    """Small thread-safe LRU of successful rewrites: a repeated question skips
+    the rewrite call entirely. (Eval questions are unique, so evals don't see it.)"""
+
+    def __init__(self, size: int = config.REWRITE_CACHE_SIZE):
+        self.size, self.items, self.lock = size, OrderedDict(), threading.Lock()
+
+    @staticmethod
+    def key(question: str) -> str:
+        return " ".join(question.lower().split())
+
+    def get(self, question: str) -> list[str] | None:
+        with self.lock:
+            value = self.items.get(self.key(question))
+            if value is not None:
+                self.items.move_to_end(self.key(question))
+            return value
+
+    def put(self, question: str, rewrites: list[str]) -> None:
+        with self.lock:
+            self.items[self.key(question)] = rewrites
+            self.items.move_to_end(self.key(question))
+            while len(self.items) > self.size:
+                self.items.popitem(last=False)
+
+
 @dataclass
 class Retriever:
     vectorstore: object
     settings: RetrievalSettings = field(default_factory=RetrievalSettings)
     rewriter: Runnable | None = None
     neighbors: ChunkNeighbors | None = None
+    reranker: object | None = None                       # rerank.CrossEncoderReranker / LLMReranker
+    cache: RewriteCache = field(default_factory=RewriteCache)
 
     def __post_init__(self):
         if self.settings.rewrite and self.rewriter is None:
             raise ValueError("rewrite is on but no rewriter was given")
         if self.settings.neighbors and self.neighbors is None:
             raise ValueError("neighbor expansion is on but no ChunkNeighbors was given")
+        if self.settings.rerank not in ("none", "", None) and self.reranker is None:
+            raise ValueError(f"rerank={self.settings.rerank!r} but no reranker was given")
 
     def _search(self, queries: list[str], depth: int) -> list[list[tuple[Document, float]]]:
         embeddings = self.vectorstore.embeddings
@@ -195,37 +239,68 @@ class Retriever:
                  self.vectorstore.similarity_search_by_vector_with_relevance_scores(v, k=depth)]
                 for v in vectors]
 
+    def _rewrite(self, question: str) -> tuple[list[str], dict, str | None, float, bool]:
+        cached = self.cache.get(question)
+        if cached is not None:
+            return cached, {}, None, 0.0, True
+        started = time.perf_counter()
+        rewrites, usage, error = rewrite_query(self.rewriter, question, self.settings.n_rewrites)
+        if rewrites and not error:
+            self.cache.put(question, rewrites)
+        return rewrites, usage, error, (time.perf_counter() - started) * 1000, False
+
     def __call__(self, question: str) -> Retrieved:
         s = self.settings
-        queries, usage, error, rewrite_ms = [question], {}, None, 0.0
-        if s.rewrite:
-            started = time.perf_counter()
-            rewrites, usage, error = rewrite_query(self.rewriter, question, s.n_rewrites)
-            rewrite_ms = (time.perf_counter() - started) * 1000
-            queries += rewrites
+        reranking = s.rerank not in ("none", "", None)
+        pool = max(s.k, s.rerank_candidates) if reranking else s.k     # candidates before the final cut
+        depth = max(s.fusion_depth, pool)
 
         started = time.perf_counter()
-        if len(queries) == 1:
-            ranked = self._search(queries, s.k)[0]
+        usage, error, rewrite_ms, cached, rewrites = {}, None, 0.0, False, []
+        if s.rewrite:
+            # Search the original question while the rewrite call is in flight
+            # (latency), then search the rewrites and fuse.
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                future = ex.submit(self._rewrite, question)
+                original = self._search([question], depth)[0]
+                rewrites, usage, error, rewrite_ms, cached = future.result()
+            lists = [original] + (self._search(rewrites, depth) if rewrites else [])
+            ranked = reciprocal_rank_fusion(lists, pool) if len(lists) > 1 else original[:pool]
         else:
-            ranked = reciprocal_rank_fusion(self._search(queries, max(s.fusion_depth, s.k)), s.k)
-        hits = [Hit(rank=i, similarity=sim, document=doc) for i, (doc, sim) in enumerate(ranked, start=1)]
+            ranked = self._search([question], pool)[0]
+        queries = [question] + rewrites
+
+        rr_ms, rr_error, tin, tout = 0.0, None, usage.get("input_tokens", 0), usage.get("output_tokens", 0)
+        if reranking:
+            r = self.reranker(question, ranked, s.k)
+            rr_ms, rr_error = r.ms, r.error
+            tin, tout = tin + r.input_tokens, tout + r.output_tokens
+            hits = [Hit(rank=i, similarity=sim, document=doc, rerank_score=score)
+                    for i, (doc, sim, score) in enumerate(r.ranked, start=1)]
+        else:
+            hits = [Hit(rank=i, similarity=sim, document=doc) for i, (doc, sim) in enumerate(ranked[: s.k], start=1)]
         if s.neighbors:
             hits = expand_with_neighbors(hits, self.neighbors, s.neighbors, s.context_max_tokens)
-        search_ms = (time.perf_counter() - started) * 1000
+        total_ms = (time.perf_counter() - started) * 1000
 
-        return Retrieved(hits=hits, queries=queries, rewrite_ms=rewrite_ms, search_ms=search_ms,
-                         input_tokens=usage.get("input_tokens", 0), output_tokens=usage.get("output_tokens", 0),
-                         rewrite_error=error)
+        return Retrieved(hits=hits, queries=queries, rewrite_ms=rewrite_ms, search_ms=total_ms - rr_ms,
+                         input_tokens=tin, output_tokens=tout, rewrite_error=error, rerank_ms=rr_ms,
+                         rerank_error=rr_error, rewrite_cached=cached)
 
 
 def build_retriever(vectorstore, settings: RetrievalSettings, llm: BaseChatModel | None = None) -> Retriever:
-    """Wire up whatever the settings need (the rewrite model, the chunk file)."""
+    """Wire up whatever the settings need (rewrite model, reranker, chunk file).
+    Auxiliary LLM calls get their own model instance when a reasoning effort is set."""
+    from .rag import get_chat_model
+    from .rerank import build_reranker
     rewriter = None
     if settings.rewrite:
-        if llm is None:
-            from .rag import get_chat_model
-            llm = get_chat_model()
-        rewriter = build_rewriter(llm)
+        rewrite_llm = get_chat_model(settings.rewrite_effort) if settings.rewrite_effort else (llm or get_chat_model())
+        rewriter = build_rewriter(rewrite_llm)
+    reranker = None
+    if settings.rerank == "llm":
+        reranker = build_reranker("llm", get_chat_model(config.RERANK_REASONING_EFFORT))
+    elif settings.rerank not in ("none", "", None):
+        reranker = build_reranker(settings.rerank)
     neighbors = ChunkNeighbors.from_file() if settings.neighbors else None
-    return Retriever(vectorstore, settings, rewriter=rewriter, neighbors=neighbors)
+    return Retriever(vectorstore, settings, rewriter=rewriter, neighbors=neighbors, reranker=reranker)

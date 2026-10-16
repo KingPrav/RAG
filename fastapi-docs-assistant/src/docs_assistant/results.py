@@ -24,7 +24,12 @@ def describe(cfg: dict) -> str:
     if setting(cfg, "neighbors"):
         parts.append(f"neighbors ±{setting(cfg, 'neighbors')}")
     if setting(cfg, "rewrite"):
-        parts.append("query rewrite")
+        parts.append("query rewrite" + (f" ({setting(cfg, 'rewrite_effort')} effort)"
+                                        if setting(cfg, "rewrite_effort") else ""))
+    if setting(cfg, "rerank") not in (None, "none"):
+        parts.append(f"rerank {setting(cfg, 'rerank')}")
+    if setting(cfg, "answer_prompt") != "v1":
+        parts.append(f"prompt {setting(cfg, 'answer_prompt')}")
     return ", ".join(parts)
 
 

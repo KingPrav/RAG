@@ -11,10 +11,13 @@ what the model was shown (rebuilt from the chunk IDs, neighbors included).
 |--------------------------------|-----------------------------------------------------|-----------|
 | faithfulness                   | Is every claim in the answer supported by the context? | answered items |
 | context_recall                 | Does the context cover the reference answer?        | answerable items |
-| factual_correctness (recall)   | Does the answer contain the reference's claims?     | answered, answerable items |
+| factual_correctness (recall)   | Does the answer contain the reference's claims?     | answered open items |
 
-Factual correctness uses recall mode: our reference answers are short, so F1
-would penalize correct extra detail. Refusals get no faithfulness score (there
+Factual correctness uses recall mode (references are concise, so F1 would
+penalize correct extra detail) and runs on open items only: Ragas splits the
+reference into claims, and a bare-value reference like "/redoc" or
+"python-multipart" yields no checkable claim, so it scored 0.00 on every
+correct exact-type answer. Those items are scored by exact match instead. Refusals get no faithfulness score (there
 is no claim to check). Scores are cached in <run>/ragas.jsonl; failed scores
 are counted and reported, never silently dropped.
 """
@@ -58,7 +61,8 @@ def build_samples(rows: list[dict], golden: dict[str, dict], chunk_texts: dict[s
         answered = bool(r.get("answerable_predicted"))
         metrics = [m for m, applies in (("faithfulness", answered),
                                         ("context_recall", answerable_item),
-                                        ("factual_correctness", answered and answerable_item)) if applies]
+                                        ("factual_correctness", answered and item["answer_type"] == "open"))
+                   if applies]
         if metrics:
             samples.append({"id": r["id"], "category": r["category"], "user_input": r["question"],
                             "response": r["answer"], "reference": item["expected_answer"],
@@ -214,6 +218,21 @@ def cached(run_dir: Path, model: str) -> list[dict] | None:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
+def drop_inapplicable(rows: list[dict], samples: list[dict]) -> list[dict]:
+    """Cached scores from an earlier version may include metrics that no longer
+    apply to an item (e.g. factual correctness on exact-type items): drop them."""
+    applies = {s["id"]: set(s["metrics"]) for s in samples}
+    out = []
+    for r in rows:
+        r = dict(r)
+        for m in METRICS:
+            if m in r and m not in applies.get(r["id"], set()):
+                r.pop(m)
+                r.get("errors", {}).pop(m, None)
+        out.append(r)
+    return out
+
+
 def save(run_dir: Path, rows: list[dict], summary: dict, meta: dict) -> None:
     (run_dir / "ragas.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
     (run_dir / "ragas_meta.json").write_text(json.dumps({**meta, "summary": summary}, indent=2))
@@ -292,6 +311,7 @@ def main():
                   f"tokens, ${meter.cost_usd:.2f}")
         else:
             print(f"{cfg['label']}: using cached scores")
+            rows = drop_inapplicable(rows, samples)
         labels.append(f"{cfg['label']} ({cfg['split']})")
         summaries.append(summarize(rows))
         per_run.append(rows)

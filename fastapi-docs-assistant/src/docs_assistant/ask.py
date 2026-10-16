@@ -7,7 +7,7 @@ Run:  python -m docs_assistant.ask "how do I declare a request body?"
 import argparse
 
 from . import config
-from .rag import answer_question, build_generator, get_chat_model
+from .rag import PROMPTS, answer_question, build_generator, get_chat_model
 from .retrieval import RetrievalSettings, build_retriever
 from .tracing import log_result
 from .vectorstore import get_embeddings, get_vectorstore
@@ -15,15 +15,15 @@ from .vectorstore import get_embeddings, get_vectorstore
 MODEL_LIST_CMD = 'python -c "from openai import OpenAI; print(sorted(m.id for m in OpenAI().models.list()))"'
 
 
-def load_pipeline(settings: RetrievalSettings | None = None):
+def load_pipeline(settings: RetrievalSettings | None = None, prompt: str = config.ANSWER_PROMPT):
     """Vector store, answer generator and retriever. Retrieval settings default
     to config (RETRIEVAL_NEIGHBORS, QUERY_REWRITE in .env)."""
     vectorstore = get_vectorstore(get_embeddings())
     if vectorstore._collection.count() == 0:
         raise SystemExit("The index is empty. Run: ingest -> chunk -> index (see README).")
     llm = get_chat_model()
-    retriever = build_retriever(vectorstore, settings or RetrievalSettings(), llm)
-    return vectorstore, build_generator(llm), retriever
+    retriever = build_retriever(vectorstore, settings or RetrievalSettings.shipped(), llm)
+    return vectorstore, build_generator(llm, prompt), retriever
 
 
 def add_retrieval_args(parser) -> None:
@@ -32,10 +32,18 @@ def add_retrieval_args(parser) -> None:
                         help="also send N sections either side of each hit (0 = off)")
     parser.add_argument("--rewrite", action=argparse.BooleanOptionalAction, default=config.QUERY_REWRITE,
                         help="rewrite the question into FastAPI vocabulary before searching")
+    parser.add_argument("--prompt", choices=sorted(PROMPTS), default=config.ANSWER_PROMPT,
+                        help="answer prompt version (see rag.PROMPTS)")
+    parser.add_argument("--rerank", choices=["none", "ce", "llm"], default=config.RERANK,
+                        help="rerank the top candidates: local cross-encoder or listwise LLM")
+    parser.add_argument("--rerank-candidates", type=int, default=config.RERANK_CANDIDATES)
+    parser.add_argument("--rewrite-effort", default=config.REWRITE_REASONING_EFFORT,
+                        help="reasoning effort for the rewrite call, e.g. low (default: model default)")
 
 
 def settings_from_args(args) -> RetrievalSettings:
-    return RetrievalSettings(k=args.k, neighbors=args.neighbors, rewrite=args.rewrite)
+    return RetrievalSettings(k=args.k, neighbors=args.neighbors, rewrite=args.rewrite, rerank=args.rerank,
+                             rerank_candidates=args.rerank_candidates, rewrite_effort=args.rewrite_effort or None)
 
 
 def explain_model_error(e: Exception) -> None:
@@ -53,9 +61,10 @@ def main():
     args = parser.parse_args()
 
     settings = settings_from_args(args)
-    vectorstore, generator, retriever = load_pipeline(settings)
+    vectorstore, generator, retriever = load_pipeline(settings, args.prompt)
     try:
-        result = answer_question(args.question, vectorstore, generator, k=args.k, retriever=retriever)
+        result = answer_question(args.question, vectorstore, generator, k=args.k, retriever=retriever,
+                                 prompt=args.prompt)
     except Exception as e:
         explain_model_error(e)
         raise
@@ -79,6 +88,7 @@ def main():
         for h in result.retrieved:
             mark = "cited" if h.chunk_id in cited else "     "
             via = "" if h.source == "search" else f"  ({h.source})"
+            via += f"  rerank {h.rerank_score:.3f}" if h.rerank_score is not None else ""
             print(f"  [{h.rank}] {h.similarity:.3f}  {mark}  {h.chunk_id}{via}")
 
     print(f"\n{result.model} · retrieve {result.retrieve_ms:.0f} ms · generate {result.generate_ms:.0f} ms"

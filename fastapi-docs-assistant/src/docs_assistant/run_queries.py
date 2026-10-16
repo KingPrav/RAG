@@ -29,13 +29,14 @@ def main():
 
     questions = read_questions(args.file)
     settings = settings_from_args(args)
-    vectorstore, generator, retriever = load_pipeline(settings)
+    vectorstore, generator, retriever = load_pipeline(settings, args.prompt)
     print(f"Running {len(questions)} questions with {config.CHAT_MODEL} (k={args.k})...\n")
 
     started, failures, cost = time.perf_counter(), 0, 0.0
     for i, question in enumerate(questions, start=1):
         try:
-            result = answer_question(question, vectorstore, generator, k=args.k, retriever=retriever)
+            result = answer_question(question, vectorstore, generator, k=args.k, retriever=retriever,
+                                     prompt=args.prompt)
         except Exception as e:                   # one bad question must not stop the batch
             explain_model_error(e)
             failures += 1

@@ -16,6 +16,7 @@ dependencies = [
     "langchain-chroma>=1.0",
     "langchain-classic>=1.0",          # SQLRecordManager for incremental indexing
     "sqlalchemy[asyncio]>=2.0",        # required by SQLRecordManager
+    "flashrank>=0.2.10",               # local cross-encoder reranker (Phase 1); model downloads on first use
 ]
 
 [project.optional-dependencies]
