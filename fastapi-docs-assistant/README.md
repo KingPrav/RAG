@@ -7,15 +7,19 @@ eval harness, so every quality claim is backed by a number.
 
 **At a glance** (provisional until the golden set is human-reviewed; full table in [Results](#results)):
 
-| | Baseline (dev) | Shipped (dev) | Shipped (held-out test) |
-|---|---|---|---|
-| Overall pass rate | 82.9% | **90.2%** | **87.2%** |
-| Paraphrased questions passed | 5/10 | **8/10** | 6/10 |
-| Right section in the model's context | 77.1% | **94.3%** | 91.4% |
-| Invalid citations | 0% | 0% | 0% |
-| Cost / p50 latency per question | $0.0005 / 2.8 s | $0.0010 / 4.5 s | $0.0010 / 4.5 s |
+| Held-out test split (39 questions, never used for tuning) | Previous system | **Shipped** |
+|---|---|---|
+| Overall pass rate | 87.2% | **97.4%** (+10.3 pts, significant) |
+| Right section ranked first (hit@1) | 42.9% | **80.0%** (significant) |
+| MRR@5 | 0.62 | **0.87** (significant) |
+| Paraphrased questions passed | 6/10 | **9/10** |
+| False refusals / invalid citations | 8.6% / 0% | **0% / 0%** |
+| Ragas faithfulness (dev) | 0.98 | 0.98 |
+| p50 latency / cost per question | 4.5 s / $0.0010 | 7.7 s / $0.0021 |
 
-Pipeline: FastAPI docs (pinned commit) → custom loader and code-safe chunker → `text-embedding-3-small` + Chroma → LLM query rewrite + rank fusion + neighbor-section expansion → grounded answer with checked citations → JSONL traces. An 80-question golden set, LLM-as-judge harness and CI gate measure every change.
+Dev split: 82.9% (Step 7 baseline) → 90.2% (Step 8) → 100% (Phase 1). Item by item on test, the shipped system fixed 4 questions and broke none.
+
+Pipeline: FastAPI docs (pinned commit) → custom loader and code-safe chunker → `text-embedding-3-small` + Chroma → LLM query rewrite + rank fusion → listwise LLM rerank → neighbor-section expansion → grounded answer (prompt v3) with checked citations → JSONL traces. An 80-question golden set, LLM-as-judge harness and CI gate measure every change.
 
 ## Architecture
 
@@ -438,7 +442,8 @@ What each experiment showed:
   - In the retrieval sweep, the **cross-encoder did not help** (hit@1 54%, about 2.4 s on CPU; it was trained on web search queries, not developer docs).
   - **Low reasoning effort did not speed up the rewrite** (2.08 → 2.04 s).
 - **Trade-off:** shipped for quality, at about +1.9 s and twice the cost per question. The no-rewrite variant is the faster alternative (4.4 s, below the previous 4.6 s) at −2.4 points.
-- **Caveat:** dev items guided the v3 prompt, so 100% on dev is optimistic. The sealed test split gives the honest number.
+- **Held-out test (run once, after shipping):** 87.2% → **97.4%** (+10.3 pts, significant), hit@1 42.9% → 80.0%, 4 fixed and 0 broken. Dev's 100% was optimistic, as expected; the test result confirms the gain is real.
+- **Ragas (dev):** faithfulness 0.98 (unchanged) and context recall 0.99 (unchanged). Factual correctness on open answers rose 0.71 → 0.77, not yet significant.
 
 ```bash
 python -m docs_assistant.experiments              # run a round of full evals and compare with the baseline
@@ -492,9 +497,10 @@ python -m docs_assistant.ragas_testset merge                                    
 | Run | Split | Retrieval | Pass rate [95% CI] | Δ vs first | Paraphrased pass | Gold in context | False refusals | $/query | p50 latency |
 |---|---|---|---|---|---|---|---|---|---|
 | baseline | dev | k=5 | 82.9% [71%–93%] | - | 5/10 | 77.1% [63%–91%] | 8.6% [0%–20%] | $0.00050 | 2,847 ms |
-| n1 | dev | k=5, neighbors ±1 | 82.9% [71%–93%] | +0.0% | 5/10 | 85.7% [74%–97%] | 2.9% [0%–9%] | $0.00084 | 2,834 ms |
 | rw-n1 | dev | k=5, neighbors ±1, query rewrite | 90.2% [80%–98%] | +7.3% | 8/10 | 94.3% [86%–100%] | 0.0% [0%–0%] | $0.00098 | 4,451 ms |
+| v3-llm | dev | k=5, neighbors ±1, query rewrite, rerank llm, prompt v3 | 100.0% [100%–100%] | +17.1%* | 10/10 | 97.1% [91%–100%] | 0.0% [0%–0%] | $0.00205 | 5,782 ms |
 | final | test | k=5, neighbors ±1, query rewrite | 87.2% [74%–97%] | - | 6/10 | 91.4% [80%–100%] | 8.6% [0%–20%] | $0.00095 | 4,482 ms |
+| final-v3-llm | test | k=5, neighbors ±1, query rewrite, rerank llm, prompt v3 | 97.4% [92%–100%] | - | 9/10 | 97.1% [89%–100%] | 0.0% [0%–0%] | $0.00208 | 7,709 ms |
 
 `*` = the 95% CI of the paired difference excludes zero.
 
@@ -511,8 +517,7 @@ _39 golden items in the last run are unreviewed drafts; numbers are provisional.
 - **Golden set not yet human-reviewed.** All items are drafts, so every number above is provisional. Review happens in `evals/golden_v1_review.csv`.
 - **Judge not yet calibrated.** Its agreement with human labels (TPR/TNR via `calibrate`) is unmeasured.
 - **Small eval set** (about 40 items per split). Confidence intervals are about ±10 points, so only large effects reach significance.
-- **Generation completeness.** Some answers drop a vital fact even when the right section was retrieved.
-- **Latency.** Query rewriting adds about 1.6 s at p50. A faster rewrite model, or neighbors ±2 without rewriting, are the options.
+- **Latency is the main open cost.** 7.7 s p50 and 12.3 s p95 end to end on test: rewrite about 2.1 s plus rerank about 2.1 s, then generation about 3.2 s. The no-rewrite variant (4.4 s on dev, −2.4 pts) is the fallback. Streaming the answer and parallelising rewrite with rerank are the next steps.
 
 ## Roadmap
 

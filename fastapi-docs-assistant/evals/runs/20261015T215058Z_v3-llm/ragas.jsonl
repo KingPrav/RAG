@@ -1,0 +1,35 @@
+{"id": "fact-001", "category": "exact-fact", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0}
+{"id": "fact-003", "category": "exact-fact", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0}
+{"id": "fact-005", "category": "exact-fact", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0}
+{"id": "fact-007", "category": "exact-fact", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0}
+{"id": "fact-009", "category": "exact-fact", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0}
+{"id": "fact-011", "category": "exact-fact", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0}
+{"id": "fact-013", "category": "exact-fact", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0}
+{"id": "term-001", "category": "exact-term", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0, "factual_correctness": 1.0}
+{"id": "term-003", "category": "exact-term", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0, "factual_correctness": 1.0}
+{"id": "term-005", "category": "exact-term", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0, "factual_correctness": 1.0}
+{"id": "term-007", "category": "exact-term", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0, "factual_correctness": 1.0}
+{"id": "vocab-001", "category": "vocab-mismatch", "errors": {}, "faithfulness": 0.9411764705882353, "context_recall": 1.0, "factual_correctness": 1.0}
+{"id": "vocab-003", "category": "vocab-mismatch", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0, "factual_correctness": 1.0}
+{"id": "vocab-005", "category": "vocab-mismatch", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0, "factual_correctness": 1.0}
+{"id": "vocab-007", "category": "vocab-mismatch", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0, "factual_correctness": 0.0}
+{"id": "vocab-009", "category": "vocab-mismatch", "errors": {}, "faithfulness": 0.9, "context_recall": 1.0, "factual_correctness": 1.0}
+{"id": "vocab-011", "category": "vocab-mismatch", "errors": {}, "faithfulness": 0.8571428571428571, "context_recall": 1.0, "factual_correctness": 0.0}
+{"id": "vocab-013", "category": "vocab-mismatch", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0, "factual_correctness": 1.0}
+{"id": "vocab-015", "category": "vocab-mismatch", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0, "factual_correctness": 0.0}
+{"id": "vocab-017", "category": "vocab-mismatch", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0, "factual_correctness": 0.5}
+{"id": "vocab-019", "category": "vocab-mismatch", "errors": {}, "faithfulness": 1.0, "context_recall": 0.5, "factual_correctness": 0.5}
+{"id": "rank-001", "category": "ranking", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0, "factual_correctness": 1.0}
+{"id": "rank-003", "category": "ranking", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0, "factual_correctness": 1.0}
+{"id": "rank-005", "category": "ranking", "errors": {}, "faithfulness": 0.9375, "context_recall": 1.0, "factual_correctness": 1.0}
+{"id": "rank-007", "category": "ranking", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0, "factual_correctness": 0.0}
+{"id": "rank-009", "category": "ranking", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0, "factual_correctness": 1.0}
+{"id": "code-001", "category": "code", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0, "factual_correctness": 1.0}
+{"id": "code-003", "category": "code", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0, "factual_correctness": 1.0}
+{"id": "code-005", "category": "code", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0, "factual_correctness": 1.0}
+{"id": "code-007", "category": "code", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0, "factual_correctness": 1.0}
+{"id": "code-009", "category": "code", "errors": {}, "faithfulness": 0.7, "context_recall": 1.0, "factual_correctness": 1.0}
+{"id": "multi-001", "category": "multi-section", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0, "factual_correctness": 1.0}
+{"id": "multi-003", "category": "multi-section", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0, "factual_correctness": 0.0}
+{"id": "multi-005", "category": "multi-section", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0, "factual_correctness": 1.0}
+{"id": "multi-007", "category": "multi-section", "errors": {}, "faithfulness": 1.0, "context_recall": 1.0, "factual_correctness": 0.67}
