@@ -491,6 +491,59 @@ python -m docs_assistant.ragas_testset merge                                    
 
 **Compatibility note:** a plain `pip install ragas` quietly breaks this project. It resolves an old `instructor` that downgrades `langchain-openai` and the `openai` SDK, and Ragas 0.4.3 imports a module that `langchain-community` 0.4.2 removed. The `[ragas]` extra pins around both. Ragas also guesses API parameters from model names and misses `gpt-6.1-sol`, so every call goes through a client wrapper that normalizes parameters for reasoning models and meters tokens.
 
+## Phase 4: semantic caching + cost-aware routing
+
+The layer that decides whether the assistant is affordable at scale. Every
+question now goes through `serve.Assistant`:
+
+```
+question ─► semantic cache ──hit──► cached answer (~0.2 s, ~$0)
+                │ miss
+                ▼
+             router (no LLM call: question text + one local probe search)
+                ├─► fast      no rewrite, no rerank, small model   (~3 s)
+                ├─► standard  the shipped Phase 1 pipeline          (~7.7 s)
+                └─► escalate  standard retrieval + a larger model   (hard multi-part questions)
+                ▼
+             answer ─► cached only if clean ─► v4 trace (route, reasons, cache, timings, true cost)
+```
+
+| file | what it does |
+|---|---|
+| `semantic_cache.py` | exact-match then embedding-similarity lookup; scoped by a pipeline fingerprint (corpus commit, prompt, models, retrieval settings, router policy) so a change never serves stale answers; only clean answers are stored (answerable, cited, no degraded steps); SQLite + an in-memory matrix, TTL + LRU |
+| `router.py` | pure function of cheap features (top-1 similarity, margin over #2, page concentration, comparison / multi-part / specific-value phrasing) → fast / standard / escalate, with the reasons recorded |
+| `serve.py` | wires cache → router → pipeline; the question is embedded **once** per request (`MemoEmbeddings`) |
+| `cost_eval.py` | proves quality is kept: cache false-hit rate per threshold, and every router policy replayed against always-standard |
+| `dashboard.py` | `reports/dashboard.html` from the traces: $/1k, p50/p95 by route, cache hit rate, near-miss histogram, eval frontier |
+
+**Measuring it (dev first, test once):**
+
+```bash
+python -m docs_assistant.cost_eval pairs                     # draft paraphrases + hard negatives; review evals/cache_pairs_v1.jsonl
+python -m docs_assistant.cost_eval calibrate-cache --split dev
+#   -> set CACHE_THRESHOLD in .env to the recommended value (lowest with zero false hits)
+python -m docs_assistant.cost_eval paths --split dev         # every item on all 3 paths, judged (paid, once)
+python -m docs_assistant.cost_eval simulate evals/runs/<ts>_paths-dev
+#   -> replays 960 router policies for free; saves the cheapest with no fewer passes
+#      than always-standard to evals/router_policy.json (the router loads it)
+python -m docs_assistant.cost_eval paths --split test --confirm-test
+python -m docs_assistant.cost_eval simulate evals/runs/<ts>_paths-test --policy evals/router_policy.json
+python -m docs_assistant.dashboard                           # or --demo to preview the layout
+```
+
+Design notes:
+- **A false cache hit is worse than a bad answer**: a confident, well-cited answer to a *different*
+  question ("read a cookie" vs "set a cookie"). So the threshold is set from measured hard negatives,
+  and every hit is traced with the question it was originally answered for.
+- **The router saves latency, not just tokens.** Rewrite (~2.1 s) and rerank (~2.1 s) are over half of
+  the 7.7 s p50; the router finds the questions where skipping them changes nothing.
+- **Escalation must earn its place.** At ~20× the small model's price, a few percent of escalated
+  traffic can cancel the cache and fast-path savings; the simulation includes `escalate=False` policies.
+- **The judge never grades its own model**: `cost_eval paths` refuses to run if `ESCALATE_MODEL`
+  equals the judge model.
+
+Results: _pending the first `paths` run._
+
 ## Results
 
 <!-- results:start -->
@@ -530,6 +583,7 @@ _39 golden items in the last run are unreviewed drafts; numbers are provisional.
 7. Eval harness: exact match for factual answers, LLM-as-judge for open-ended ones ✅
 8. Improvements, measured against the baseline ✅ (shipped: rewrite + neighbors ±1)
 9. CI eval gate + results table ✅
+10. Semantic cache + cost-aware routing, with cost/latency dashboard ✅ (built; measurement pending)
 
 Next:
 - Human review of the golden set.

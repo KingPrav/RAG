@@ -31,7 +31,7 @@ def make_result(question="How do I declare a request body?", top=0.62, answerabl
 
 def test_trace_has_separate_retrieval_and_generation_sections():
     t = build_trace(make_result(), k=5)
-    assert t["schema_version"] == 3 and len(t["trace_id"]) == 32
+    assert t["schema_version"] == 4 and len(t["trace_id"]) == 32
     assert t["corpus"]["source_commit"] == "abc123"
     assert t["corpus"]["collection"] == config.COLLECTION_NAME
     r = t["retrieval"]

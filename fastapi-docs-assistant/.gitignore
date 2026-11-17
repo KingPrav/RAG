@@ -9,3 +9,5 @@ data/processed/
 data/index/
 data/logs/
 data/models/
+data/cache/
+reports/

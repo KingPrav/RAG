@@ -128,6 +128,11 @@ class RAGResult:
     rerank_ms: float = 0.0                                 # part of retrieve_ms
     rerank_error: str | None = None
     rewrite_cached: bool = False
+    # Of input/output_tokens, the share spent on rewrite + rerank. Those calls
+    # always run on the small chat model, while the answer may come from a
+    # larger one (escalation), so the two parts are priced separately.
+    aux_input_tokens: int = 0
+    aux_output_tokens: int = 0
 
     @property
     def search_hits(self) -> list[Hit]:
@@ -139,8 +144,11 @@ class RAGResult:
 
     @property
     def cost_usd(self) -> float:
-        return (self.input_tokens * config.CHAT_USD_PER_1M_INPUT
-                + self.output_tokens * config.CHAT_USD_PER_1M_OUTPUT) / 1e6
+        gen_in, gen_out = config.model_price(self.model)
+        aux = self.aux_input_tokens * config.CHAT_USD_PER_1M_INPUT + self.aux_output_tokens * config.CHAT_USD_PER_1M_OUTPUT
+        gen = ((self.input_tokens - self.aux_input_tokens) * gen_in
+               + (self.output_tokens - self.aux_output_tokens) * gen_out)
+        return (aux + gen) / 1e6
 
 
 def format_context(hits: list[Hit]) -> str:
@@ -181,7 +189,8 @@ def answer_question(question: str, vectorstore, generator: Runnable, *, k: int =
     common = dict(model=model_name, retrieve_ms=retrieve_ms, queries=retrieved.queries, prompt=prompt,
                   rewrite_ms=retrieved.rewrite_ms, rewrite_error=retrieved.rewrite_error,
                   rerank_ms=retrieved.rerank_ms, rerank_error=retrieved.rerank_error,
-                  rewrite_cached=retrieved.rewrite_cached)
+                  rewrite_cached=retrieved.rewrite_cached, aux_input_tokens=retrieved.input_tokens,
+                  aux_output_tokens=retrieved.output_tokens)
 
     if not hits:                       # nothing to ground on: don't spend an LLM call
         return RAGResult(question, NO_SOURCES_ANSWER, False, [], [], input_tokens=retrieved.input_tokens,
@@ -211,9 +220,10 @@ def answer_question(question: str, vectorstore, generator: Runnable, *, k: int =
     )
 
 
-def get_chat_model(reasoning_effort: str | None = None) -> BaseChatModel:
-    """The cheap chat model. A reasoning effort (e.g. "low") is set only for
-    simple auxiliary calls (rewrite, rerank) where thinking time is wasted."""
+def get_chat_model(reasoning_effort: str | None = None, model: str | None = None) -> BaseChatModel:
+    """The cheap chat model (or `model`, e.g. the escalation model). A reasoning
+    effort (e.g. "low") is set only for simple auxiliary calls (rewrite, rerank)
+    where thinking time is wasted."""
     from langchain_openai import ChatOpenAI
     extra = {"reasoning_effort": reasoning_effort} if reasoning_effort else {}
-    return ChatOpenAI(model=config.CHAT_MODEL, max_retries=3, timeout=60, **extra)
+    return ChatOpenAI(model=model or config.CHAT_MODEL, max_retries=3, timeout=60, **extra)

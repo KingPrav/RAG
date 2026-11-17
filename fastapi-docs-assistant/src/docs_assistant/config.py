@@ -129,3 +129,32 @@ RAGAS_QUESTION_MODEL = os.getenv("RAGAS_QUESTION_MODEL", RAGAS_MODEL)
 EVAL_WORKERS = int(os.getenv("EVAL_WORKERS", "4"))      # questions answered in parallel
 BOOTSTRAP_RESAMPLES = 5000
 
+
+# ---- Phase 4: semantic cache + cost-aware routing
+# Cache: a new question is answered from the cache when its embedding is at
+# least CACHE_THRESHOLD cosine-similar to a cached question asked of the *same*
+# pipeline (corpus commit, prompt, models, retrieval settings). The threshold
+# is a quality knob, not a speed knob: set it from `python -m
+# docs_assistant.cost_eval calibrate-cache`, which measures the false-hit rate
+# (near-identical wording, different question, e.g. path vs query parameters).
+CACHE_ENABLED = os.getenv("CACHE_ENABLED", "1").lower() in ("1", "true", "yes")
+CACHE_THRESHOLD = float(os.getenv("CACHE_THRESHOLD", "0.95"))
+CACHE_TTL_DAYS = float(os.getenv("CACHE_TTL_DAYS", "30"))
+CACHE_MAX_ENTRIES = int(os.getenv("CACHE_MAX_ENTRIES", "50000"))
+CACHE_DB = DATA_DIR / "cache" / "semantic_cache.sqlite"
+
+# Routing: "fast" skips rewrite + rerank (saves ~4 s), "standard" is the shipped
+# pipeline, "escalate" keeps standard retrieval but answers with a larger model.
+# ROUTING=off sends everything to standard (reproduces Phase 1).
+ROUTING = os.getenv("ROUTING", "on").lower()
+ESCALATE_MODEL = os.getenv("ESCALATE_MODEL", "gpt-6.1-sol")
+ESCALATE_USD_PER_1M_INPUT = float(os.getenv("ESCALATE_USD_PER_1M_INPUT", "5.00"))
+ESCALATE_USD_PER_1M_OUTPUT = float(os.getenv("ESCALATE_USD_PER_1M_OUTPUT", "30.00"))
+
+
+def model_price(model: str) -> tuple[float, float]:
+    """(USD per 1M input, per 1M output) for an answering model; unknown models
+    are priced as the chat model, which under- rather than over-states savings."""
+    prices = {CHAT_MODEL: (CHAT_USD_PER_1M_INPUT, CHAT_USD_PER_1M_OUTPUT),
+              ESCALATE_MODEL: (ESCALATE_USD_PER_1M_INPUT, ESCALATE_USD_PER_1M_OUTPUT)}
+    return prices.get(model, prices[CHAT_MODEL])

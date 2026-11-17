@@ -9,6 +9,11 @@ time once they are stable):
     generation {model, prompt_version, latency_ms, input_tokens, output_tokens,
                 context_tokens, cost_usd, answer, answerable, citations, invalid_citations}
     usage      {context utilization, citation support, code grounding}  (see usage.py)
+    serving    {route, decision {reasons, features}, cache, timings_ms, cost_usd,
+                pipeline_fingerprint}   (v4, requests answered through serve.Assistant)
+
+A cache hit has no retrieval and no usage block (nothing was retrieved); its
+generation block describes the cached answer and its original model.
 
 Stores chunk IDs and scores rather than chunk text: IDs are enough to replay
 a query against the index, and they keep the log small.
@@ -23,7 +28,8 @@ from . import config
 from .rag import RAGResult, prompt_hash
 from .usage import analyze_usage
 
-SCHEMA_VERSION = 3          # 2: settings, queries, per-chunk source; 3: prompt id, rerank, rewrite cache
+SCHEMA_VERSION = 4          # 2: settings, queries, per-chunk source; 3: prompt id, rerank, rewrite cache
+                            # 4: serving block (route, router features, cache, per-step timings, cost)
 TRACES_PATH = config.DATA_DIR / "logs" / "traces.jsonl"
 
 
@@ -106,3 +112,41 @@ def load_traces(path: Path = TRACES_PATH) -> list[dict]:
         return []
     with path.open() as f:
         return [json.loads(line) for line in f if line.strip()]
+
+
+# ---------------------------------------------------------------- served requests (v4)
+
+def build_served_trace(served, k: int, fingerprint: str, settings: dict | None = None) -> dict:
+    """Trace for a request answered by serve.Assistant: the usual blocks for a
+    pipeline answer, plus `serving`. Cache hits get a compact trace."""
+    serving = {"route": served.route, "decision": served.decision, "cache": served.cache,
+               "timings_ms": served.timings_ms, "cost_usd": round(served.cost_usd, 8),
+               "pipeline_fingerprint": fingerprint}
+    if served.result is not None:
+        trace = build_trace(served.result, k, settings)
+        trace["serving"] = serving
+        return trace
+    return {
+        "trace_id": uuid.uuid4().hex,
+        "timestamp": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        "schema_version": SCHEMA_VERSION,
+        "question": served.question,
+        "corpus": {"collection": config.COLLECTION_NAME, "embedding_model": config.EMBEDDING_MODEL},
+        "retrieval": None,
+        "generation": {"model": served.cache.get("answer_model"), "latency_ms": 0.0, "input_tokens": 0,
+                       "output_tokens": 0, "cost_usd": 0.0, "answer": served.answer,
+                       "answerable": served.answerable, "citations": [c["number"] for c in served.citations],
+                       "invalid_citations": []},
+        "usage": None,
+        "serving": serving,
+    }
+
+
+def log_served(served, k: int, fingerprint: str, path: Path = TRACES_PATH, settings: dict | None = None) -> dict | None:
+    try:
+        trace = build_served_trace(served, k, fingerprint, settings)
+        append_trace(trace, path)
+        return trace
+    except Exception as e:                       # noqa: BLE001 - logging must never break answering
+        print(f"WARNING: could not write trace: {e}")
+        return None
